@@ -32,8 +32,21 @@ PhotoChoser 是一个面向活动摄影快速返图的跨平台选片工具，�
 ## 开发运行
 
 ```bash
-go mod tidy
-go run ./cmd/photochoser
+make run
+```
+
+也可以直接使用 Go 命令：
+
+```bash
+GOCACHE=$PWD/.cache/go-build GOMODCACHE=$PWD/.cache/mod go run ./cmd/photochoser
+```
+
+## 常用开发命令
+
+```bash
+make test
+make build
+make check-windows
 ```
 
 ## 打包
