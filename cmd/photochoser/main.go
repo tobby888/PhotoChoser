@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"image"
 	"path/filepath"
@@ -15,10 +16,10 @@ import (
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+	nativedialog "github.com/sqweek/dialog"
 )
 
 type photoApp struct {
@@ -125,14 +126,14 @@ func (ui *photoApp) build() {
 	recursiveCheck.SetChecked(true)
 
 	sourceButton := widget.NewButtonWithIcon("照片目录", theme.FolderOpenIcon(), func() {
-		ui.openFolder(func(path string) {
+		ui.openFolder("选择照片目录", ui.sourceDir, func(path string) {
 			ui.sourceDir = path
 			ui.sourceLabel.SetText(compactPath(path))
 			ui.scan()
 		})
 	})
 	targetButton := widget.NewButtonWithIcon("目标目录", theme.FolderIcon(), func() {
-		ui.openFolder(func(path string) {
+		ui.openFolder("选择目标目录", ui.targetDir, func(path string) {
 			ui.targetDir = path
 			ui.targetLabel.SetText(compactPath(path))
 			ui.refreshStatus()
@@ -189,18 +190,21 @@ func (ui *photoApp) build() {
 	ui.window.SetContent(content)
 }
 
-func (ui *photoApp) openFolder(onPick func(string)) {
-	dialog.NewFolderOpen(func(uri fyne.ListableURI, err error) {
-		if err != nil {
-			ui.statusLabel.SetText(err.Error())
-			return
-		}
-		if uri == nil {
-			return
-		}
-		path := uri.Path()
-		onPick(path)
-	}, ui.window).Show()
+func (ui *photoApp) openFolder(title string, startDir string, onPick func(string)) {
+	builder := nativedialog.Directory().Title(title)
+	if startDir != "" {
+		builder.SetStartDir(startDir)
+	}
+
+	path, err := builder.Browse()
+	if errors.Is(err, nativedialog.ErrCancelled) {
+		return
+	}
+	if err != nil {
+		ui.statusLabel.SetText(err.Error())
+		return
+	}
+	onPick(path)
 }
 
 func (ui *photoApp) bindKeys() {

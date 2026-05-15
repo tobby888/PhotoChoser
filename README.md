@@ -5,6 +5,7 @@ PhotoChoser 是一个面向活动摄影快速返图的跨平台选片工具，�
 ## 功能
 
 - 扫描照片目录，支持递归扫描。
+- 使用系统原生文件夹选择窗口选择照片目录和目标目录。
 - 左侧显示缩略图列表，右侧显示大图预览。
 - 使用快捷键快速切换和挑选照片。
 - 将已挑选照片移动到指定目录。
@@ -42,4 +43,3 @@ go install fyne.io/tools/cmd/fyne@latest
 fyne package -os darwin -icon Icon.png
 fyne package -os windows -icon Icon.png
 ```
-
