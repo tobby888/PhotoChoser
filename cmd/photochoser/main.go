@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"image"
 	"path/filepath"
@@ -9,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"photochoser/internal/nativepicker"
 	"photochoser/internal/photos"
 	"photochoser/internal/preview"
 
@@ -19,15 +19,16 @@ import (
 	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
-	nativedialog "github.com/sqweek/dialog"
 )
 
 type photoApp struct {
 	window fyne.Window
 
-	sourceDir string
-	targetDir string
-	recursive bool
+	sourceDir     string
+	sourceFiles   []string
+	sourceBaseDir string
+	targetDir     string
+	recursive     bool
 
 	items   []photos.Photo
 	current int
@@ -106,9 +107,9 @@ func main() {
 }
 
 func (ui *photoApp) build() {
-	ui.sourceLabel = widget.NewLabel("未选择照片目录")
+	ui.sourceLabel = widget.NewLabel("未导入照片")
 	ui.targetLabel = widget.NewLabel("未选择目标目录")
-	ui.statusLabel = widget.NewLabel("请选择照片目录开始")
+	ui.statusLabel = widget.NewLabel("请选择多张照片导入，或扫描照片目录")
 	ui.countLabel = widget.NewLabel("0 张 / 已选 0 张")
 	ui.titleLabel = widget.NewLabel("没有照片")
 	ui.titleLabel.TextStyle = fyne.TextStyle{Bold: true}
@@ -125,9 +126,16 @@ func (ui *photoApp) build() {
 	})
 	recursiveCheck.SetChecked(true)
 
-	sourceButton := widget.NewButtonWithIcon("照片目录", theme.FolderOpenIcon(), func() {
-		ui.openFolder("选择照片目录", ui.sourceDir, func(path string) {
+	importButton := widget.NewButtonWithIcon("导入照片", theme.FileIcon(), func() {
+		ui.openFiles("选择要导入的照片", ui.initialSourceDir(), func(paths []string) {
+			ui.importFiles(paths)
+		})
+	})
+	sourceButton := widget.NewButtonWithIcon("扫描目录", theme.FolderOpenIcon(), func() {
+		ui.openFolder("选择照片目录", ui.initialSourceDir(), func(path string) {
 			ui.sourceDir = path
+			ui.sourceFiles = nil
+			ui.sourceBaseDir = path
 			ui.sourceLabel.SetText(compactPath(path))
 			ui.scan()
 		})
@@ -175,7 +183,7 @@ func (ui *photoApp) build() {
 	}
 
 	top := container.NewVBox(
-		container.NewHBox(sourceButton, ui.sourceLabel, recursiveCheck),
+		container.NewHBox(importButton, sourceButton, ui.sourceLabel, recursiveCheck),
 		container.NewHBox(targetButton, ui.targetLabel, ui.moveButton),
 	)
 	sidebar := container.NewBorder(ui.countLabel, nil, nil, nil, ui.list)
@@ -191,13 +199,8 @@ func (ui *photoApp) build() {
 }
 
 func (ui *photoApp) openFolder(title string, startDir string, onPick func(string)) {
-	builder := nativedialog.Directory().Title(title)
-	if startDir != "" {
-		builder.SetStartDir(startDir)
-	}
-
-	path, err := builder.Browse()
-	if errors.Is(err, nativedialog.ErrCancelled) {
+	path, err := nativepicker.PickFolder(title, startDir)
+	if err == nativepicker.ErrCancelled {
 		return
 	}
 	if err != nil {
@@ -205,6 +208,18 @@ func (ui *photoApp) openFolder(title string, startDir string, onPick func(string
 		return
 	}
 	onPick(path)
+}
+
+func (ui *photoApp) openFiles(title string, startDir string, onPick func([]string)) {
+	paths, err := nativepicker.PickFiles(title, startDir)
+	if err == nativepicker.ErrCancelled {
+		return
+	}
+	if err != nil {
+		ui.statusLabel.SetText(err.Error())
+		return
+	}
+	onPick(paths)
 }
 
 func (ui *photoApp) bindKeys() {
@@ -234,6 +249,23 @@ func (ui *photoApp) scan() {
 		ui.statusLabel.SetText(err.Error())
 		return
 	}
+	ui.loadItems(items)
+}
+
+func (ui *photoApp) importFiles(paths []string) {
+	items := photos.FromPaths(paths)
+	ui.sourceFiles = paths
+	ui.sourceDir = ""
+	ui.sourceBaseDir = commonDir(items)
+	if len(items) == 0 {
+		ui.statusLabel.SetText("没有导入受支持的照片文件")
+		return
+	}
+	ui.sourceLabel.SetText(fmt.Sprintf("已导入 %d 张", len(items)))
+	ui.loadItems(items)
+}
+
+func (ui *photoApp) loadItems(items []photos.Photo) {
 	ui.items = items
 	ui.current = -1
 	ui.thumbs = sync.Map{}
@@ -354,8 +386,18 @@ func (ui *photoApp) moveSelected() {
 		ui.statusLabel.SetText(fmt.Sprintf("已移动 %d 张照片到 %s", moved, compactPath(ui.targetDir)))
 	}
 	message := ui.statusLabel.Text
-	ui.scan()
+	ui.removeSelectedFromList()
 	ui.statusLabel.SetText(message)
+}
+
+func (ui *photoApp) removeSelectedFromList() {
+	remaining := make([]photos.Photo, 0, len(ui.items))
+	for _, item := range ui.items {
+		if !item.Selected {
+			remaining = append(remaining, item)
+		}
+	}
+	ui.loadItems(remaining)
 }
 
 func (ui *photoApp) refreshStatus() {
@@ -402,4 +444,28 @@ func compactPath(path string) string {
 		return string(filepath.Separator) + filepath.Join(parts[1], "...", parts[len(parts)-2], parts[len(parts)-1])
 	}
 	return filepath.Join(parts[0], "...", parts[len(parts)-2], parts[len(parts)-1])
+}
+
+func (ui *photoApp) initialSourceDir() string {
+	if ui.sourceBaseDir != "" {
+		return ui.sourceBaseDir
+	}
+	if len(ui.sourceFiles) > 0 {
+		return filepath.Dir(ui.sourceFiles[0])
+	}
+	return ""
+}
+
+func commonDir(items []photos.Photo) string {
+	if len(items) == 0 {
+		return ""
+	}
+	dir := filepath.Dir(items[0].Path)
+	for _, item := range items[1:] {
+		next := filepath.Dir(item.Path)
+		if next != dir {
+			return ""
+		}
+	}
+	return dir
 }

@@ -13,6 +13,7 @@ func TestScanFindsSupportedFilesRecursively(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeFile(t, filepath.Join(dir, "a.ARW"))
+	writeFile(t, filepath.Join(dir, "._a.ARW"))
 	writeFile(t, filepath.Join(nested, "b.CR3"))
 	writeFile(t, filepath.Join(dir, "notes.txt"))
 
@@ -48,6 +49,26 @@ func TestMoveSelectedMovesPhotoAndXMP(t *testing.T) {
 	}
 	if _, err := os.Stat(raw); !os.IsNotExist(err) {
 		t.Fatalf("expected source raw to be moved, stat err: %v", err)
+	}
+}
+
+func TestFromPathsFiltersUnsupportedFilesAndDuplicates(t *testing.T) {
+	dir := t.TempDir()
+	raw := filepath.Join(dir, "event.ARW")
+	jpg := filepath.Join(dir, "event.jpg")
+	txt := filepath.Join(dir, "notes.txt")
+	appleDouble := filepath.Join(dir, "._event.ARW")
+	writeFile(t, raw)
+	writeFile(t, jpg)
+	writeFile(t, txt)
+	writeFile(t, appleDouble)
+
+	items := FromPaths([]string{txt, raw, raw, jpg, appleDouble})
+	if len(items) != 2 {
+		t.Fatalf("expected 2 imported photos, got %d", len(items))
+	}
+	if items[0].Name != "event.ARW" || items[1].Name != "event.jpg" {
+		t.Fatalf("unexpected import order: %#v", items)
 	}
 }
 

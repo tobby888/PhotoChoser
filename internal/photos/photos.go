@@ -34,6 +34,9 @@ var supportedExtensions = map[string]struct{}{
 }
 
 func IsSupported(path string) bool {
+	if isAppleDouble(path) {
+		return false
+	}
 	_, ok := supportedExtensions[strings.ToLower(filepath.Ext(path))]
 	return ok
 }
@@ -103,10 +106,28 @@ func Scan(root string, recursive bool) ([]Photo, error) {
 		return nil, err
 	}
 
-	sort.Slice(items, func(i, j int) bool {
-		return naturalishKey(items[i].Name) < naturalishKey(items[j].Name)
-	})
+	sortPhotos(items)
 	return items, nil
+}
+
+func FromPaths(paths []string) []Photo {
+	seen := make(map[string]struct{}, len(paths))
+	items := make([]Photo, 0, len(paths))
+	for _, path := range paths {
+		clean := filepath.Clean(path)
+		if _, ok := seen[clean]; ok {
+			continue
+		}
+		seen[clean] = struct{}{}
+
+		info, err := os.Stat(clean)
+		if err != nil || info.IsDir() || !IsSupported(clean) {
+			continue
+		}
+		items = append(items, photoFromPath(clean))
+	}
+	sortPhotos(items)
+	return items
 }
 
 func MoveSelected(items []Photo, targetDir string) (int, []error) {
@@ -143,6 +164,16 @@ func photoFromPath(path string) Photo {
 
 func naturalishKey(name string) string {
 	return strings.ToLower(name)
+}
+
+func isAppleDouble(path string) bool {
+	return strings.HasPrefix(filepath.Base(path), "._")
+}
+
+func sortPhotos(items []Photo) {
+	sort.Slice(items, func(i, j int) bool {
+		return naturalishKey(items[i].Name) < naturalishKey(items[j].Name)
+	})
 }
 
 func moveOne(src string, targetDir string) error {

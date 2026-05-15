@@ -47,14 +47,21 @@ func Load(path string) (image.Image, error) {
 	}
 
 	jpegBytes, err := ExtractEmbeddedJPEG(path)
+	if err == nil {
+		img, err := jpeg.Decode(bytes.NewReader(jpegBytes))
+		if err == nil {
+			return img, nil
+		}
+	}
+
+	img, nativeErr := loadNativePreview(path)
+	if nativeErr == nil {
+		return img, nil
+	}
 	if err != nil {
 		return nil, err
 	}
-	img, err := jpeg.Decode(bytes.NewReader(jpegBytes))
-	if err != nil {
-		return nil, err
-	}
-	return img, nil
+	return nil, nativeErr
 }
 
 func Scale(src image.Image, maxSide int) image.Image {
