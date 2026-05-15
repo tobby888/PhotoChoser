@@ -23,23 +23,32 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
+const (
+	thumbMaxSide        = 220
+	previewMaxSide      = 1280
+	previewPrefetchNext = 3
+	thumbWorkerLimit    = 3
+)
+
 type photoApp struct {
 	window fyne.Window
 
-	sourceDir     string
-	sourceFiles   []string
-	sourceBaseDir string
-	targetDir     string
-	recursive     bool
-	transferMode  photos.TransferMode
-	thumbCacheDir string
+	sourceDir       string
+	sourceFiles     []string
+	sourceBaseDir   string
+	targetDir       string
+	recursive       bool
+	transferMode    photos.TransferMode
+	previewCacheDir string
 
 	items   []photos.Photo
 	current int
 
-	thumbs  sync.Map
-	errors  sync.Map
-	loading sync.Map
+	thumbs         sync.Map
+	previewImages  sync.Map
+	errors         sync.Map
+	loading        sync.Map
+	previewLoading sync.Map
 
 	sourceLabel *widget.Label
 	targetLabel *widget.Label
@@ -93,9 +102,9 @@ func (row *thumbRow) CreateRenderer() fyne.WidgetRenderer {
 }
 
 func main() {
-	thumbCacheDir, _ := os.MkdirTemp("", "photochoser-thumbs-*")
-	if thumbCacheDir != "" {
-		defer os.RemoveAll(thumbCacheDir)
+	previewCacheDir, _ := os.MkdirTemp("", "photochoser-previews-*")
+	if previewCacheDir != "" {
+		defer os.RemoveAll(previewCacheDir)
 	}
 
 	fyneApp := app.NewWithID("com.photochoser.desktop")
@@ -105,11 +114,11 @@ func main() {
 	w.Resize(fyne.NewSize(1180, 760))
 
 	ui := &photoApp{
-		window:        w,
-		recursive:     true,
-		current:       -1,
-		transferMode:  photos.TransferMove,
-		thumbCacheDir: thumbCacheDir,
+		window:          w,
+		recursive:       true,
+		current:         -1,
+		transferMode:    photos.TransferMove,
+		previewCacheDir: previewCacheDir,
 	}
 	ui.build()
 	ui.bindKeys()
@@ -295,14 +304,15 @@ func (ui *photoApp) loadItems(items []photos.Photo) {
 	ui.items = items
 	ui.current = -1
 	ui.thumbs = sync.Map{}
+	ui.previewImages = sync.Map{}
 	ui.errors = sync.Map{}
 	ui.loading = sync.Map{}
+	ui.previewLoading = sync.Map{}
 	ui.scanToken.Add(1)
 	ui.list.Refresh()
 	if len(items) > 0 {
 		ui.setCurrent(0)
 		ui.list.Select(0)
-		ui.preloadThumbs(ui.scanToken.Load())
 	} else {
 		ui.mainImage.Image = nil
 		ui.mainImage.Refresh()
@@ -318,27 +328,22 @@ func (ui *photoApp) setCurrent(id int) {
 	ui.current = id
 	item := ui.items[id]
 	ui.titleLabel.SetText(selectionMark(item.Selected) + item.Name)
-	ui.statusLabel.SetText("正在加载预览...")
+	ui.prunePreviewImages(id)
 
 	token := ui.previewToken.Add(1)
-	go func(path string, name string, selected bool) {
-		img, err := preview.LoadScaled(path, 1600)
-		fyne.Do(func() {
-			if ui.previewToken.Load() != token {
-				return
-			}
-			if err != nil {
-				ui.mainImage.Image = nil
-				ui.mainImage.Refresh()
-				ui.statusLabel.SetText("无法预览：" + err.Error())
-				return
-			}
-			ui.mainImage.Image = img
-			ui.mainImage.Refresh()
-			ui.titleLabel.SetText(selectionMark(selected) + name)
-			ui.refreshStatus()
-		})
-	}(item.Path, item.Name, item.Selected)
+	if imgValue, ok := ui.previewImages.Load(item.Path); ok {
+		ui.mainImage.Image = imgValue.(image.Image)
+		ui.mainImage.Refresh()
+		ui.refreshStatus()
+		token := ui.scanToken.Load()
+		ui.preloadNearbyPreviews(id, token)
+		ui.preloadThumbs(token)
+		return
+	}
+
+	ui.showFastPreviewPlaceholder(item)
+	ui.statusLabel.SetText("正在加载大图...")
+	go ui.loadCurrentPreview(id, item.Path, item.Name, item.Selected, token, ui.scanToken.Load())
 }
 
 func (ui *photoApp) loadThumb(id int, token int64) {
@@ -385,7 +390,7 @@ func (ui *photoApp) preloadThumbs(token int64) {
 		return
 	}
 	workers := min(total, max(2, runtime.NumCPU()))
-	workers = min(workers, 6)
+	workers = min(workers, thumbWorkerLimit)
 	jobs := make(chan int, total)
 
 	for range workers {
@@ -411,7 +416,90 @@ func (ui *photoApp) preloadThumbs(token int64) {
 }
 
 func (ui *photoApp) loadThumbImage(path string) (image.Image, error) {
-	return preview.LoadCachedScaled(path, 220, ui.thumbCacheDir)
+	return preview.LoadCachedScaled(path, thumbMaxSide, ui.previewCacheDir)
+}
+
+func (ui *photoApp) showFastPreviewPlaceholder(item photos.Photo) {
+	if imgValue, ok := ui.thumbs.Load(item.Path); ok {
+		ui.mainImage.Image = imgValue.(image.Image)
+		ui.mainImage.Refresh()
+		return
+	}
+	ui.mainImage.Image = nil
+	ui.mainImage.Refresh()
+}
+
+func (ui *photoApp) loadCurrentPreview(id int, path string, name string, selected bool, token int64, scanToken int64) {
+	img, err := ui.loadPreviewImage(path)
+	fyne.Do(func() {
+		if ui.previewToken.Load() != token {
+			return
+		}
+		if err != nil {
+			ui.mainImage.Image = nil
+			ui.mainImage.Refresh()
+			ui.statusLabel.SetText("无法预览：" + err.Error())
+			return
+		}
+		ui.previewImages.Store(path, img)
+		ui.mainImage.Image = img
+		ui.mainImage.Refresh()
+		ui.titleLabel.SetText(selectionMark(selected) + name)
+		ui.refreshStatus()
+		ui.preloadNearbyPreviews(id, scanToken)
+		ui.preloadThumbs(scanToken)
+	})
+}
+
+func (ui *photoApp) preloadNearbyPreviews(current int, token int64) {
+	for offset := 1; offset <= previewPrefetchNext; offset++ {
+		ui.preloadPreview(current+offset, token)
+	}
+	ui.preloadPreview(current-1, token)
+}
+
+func (ui *photoApp) preloadPreview(id int, token int64) {
+	if id < 0 || id >= len(ui.items) || ui.scanToken.Load() != token {
+		return
+	}
+	item := ui.items[id]
+	if _, ok := ui.previewImages.Load(item.Path); ok {
+		return
+	}
+	if _, loaded := ui.previewLoading.LoadOrStore(item.Path, struct{}{}); loaded {
+		return
+	}
+	go func(path string) {
+		defer ui.previewLoading.Delete(path)
+		if ui.scanToken.Load() != token {
+			return
+		}
+		img, err := ui.loadPreviewImage(path)
+		if err != nil || ui.scanToken.Load() != token {
+			return
+		}
+		ui.previewImages.Store(path, img)
+	}(item.Path)
+}
+
+func (ui *photoApp) loadPreviewImage(path string) (image.Image, error) {
+	return preview.LoadCachedScaled(path, previewMaxSide, ui.previewCacheDir)
+}
+
+func (ui *photoApp) prunePreviewImages(current int) {
+	keep := make(map[string]struct{}, previewPrefetchNext+2)
+	for id := current - 1; id <= current+previewPrefetchNext; id++ {
+		if id >= 0 && id < len(ui.items) {
+			keep[ui.items[id].Path] = struct{}{}
+		}
+	}
+	ui.previewImages.Range(func(key any, value any) bool {
+		path := key.(string)
+		if _, ok := keep[path]; !ok {
+			ui.previewImages.Delete(path)
+		}
+		return true
+	})
 }
 
 func (ui *photoApp) goTo(id int) {
