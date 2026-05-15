@@ -2,7 +2,7 @@
 
 ## Project Goal
 
-PhotoChoser is a Go desktop app for event photographers who need fast same-day photo selection and delivery. The app must help the photographer quickly import photos, view thumbnails and large previews, mark keepers with shortcuts, and move selected photos into a chosen delivery folder.
+PhotoChoser is a Go desktop app for event photographers who need fast same-day photo selection and delivery. The app must help the photographer quickly import photos, view thumbnails and large previews, mark keepers with shortcuts, and move or copy selected photos into a chosen delivery folder.
 
 ## User Requirements
 
@@ -14,10 +14,12 @@ PhotoChoser is a Go desktop app for event photographers who need fast same-day p
 - Keep directory scanning available, including recursive scanning.
 - Use system-native folder selection for choosing scan folders and target folders; do not use Fyne's internal folder picker for this.
 - Show a thumbnail list and a large preview for the current photo.
+- Generate thumbnails concurrently with Go goroutines for fast browsing; session thumbnail caches are allowed, but all cache files must be cleared when the app exits.
 - Rotate JPEG previews according to EXIF/TIFF orientation metadata before displaying them.
-- Use shortcuts for fast culling: left/right to navigate, space to toggle selection, `M` or Enter to move selected photos.
-- Move all selected photos to the target folder, preserving filenames and avoiding overwrite collisions with suffixes.
-- Move same-name `.xmp` or `.XMP` sidecar files together with RAW files.
+- Use shortcuts for fast culling: left/right to navigate, space to toggle selection, `M` or Enter to run the selected move/copy delivery action.
+- Let the photographer choose whether selected photos are moved or copied to the target folder.
+- Move or copy all selected photos to the target folder, preserving filenames and avoiding overwrite collisions with suffixes.
+- Move or copy same-name `.xmp` or `.XMP` sidecar files together with RAW files.
 - Support JPEG, PNG, TIFF, and mainstream mirrorless/camera RAW formats.
 - RAW support must include vendor formats from Sony, Nikon, Canon, Fujifilm, Panasonic, Olympus/OM System, Pentax, Leica, Hasselblad, Phase One, Sigma, Kodak, Epson, Mamiya, and similar cameras.
 - Sony `.arw` files, including compressed ARW from Sony mirrorless bodies, must be supported.
@@ -34,7 +36,7 @@ PhotoChoser is a Go desktop app for event photographers who need fast same-day p
 ## Current Architecture
 
 - Main app entry point: `cmd/photochoser/main.go`
-- Photo scanning, import filtering, sorting, and moving: `internal/photos`
+- Photo scanning, import filtering, sorting, and move/copy delivery: `internal/photos`
 - RAW and image preview loading: `internal/preview`
 - Native file/folder picker wrappers: `internal/nativepicker`
 - Cross-platform build check: `.github/workflows/build.yml`

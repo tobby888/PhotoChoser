@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"image"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,6 +31,8 @@ type photoApp struct {
 	sourceBaseDir string
 	targetDir     string
 	recursive     bool
+	transferMode  photos.TransferMode
+	thumbCacheDir string
 
 	items   []photos.Photo
 	current int
@@ -89,6 +93,11 @@ func (row *thumbRow) CreateRenderer() fyne.WidgetRenderer {
 }
 
 func main() {
+	thumbCacheDir, _ := os.MkdirTemp("", "photochoser-thumbs-*")
+	if thumbCacheDir != "" {
+		defer os.RemoveAll(thumbCacheDir)
+	}
+
 	fyneApp := app.NewWithID("com.photochoser.desktop")
 	fyneApp.Settings().SetTheme(theme.LightTheme())
 
@@ -96,9 +105,11 @@ func main() {
 	w.Resize(fyne.NewSize(1180, 760))
 
 	ui := &photoApp{
-		window:    w,
-		recursive: true,
-		current:   -1,
+		window:        w,
+		recursive:     true,
+		current:       -1,
+		transferMode:  photos.TransferMove,
+		thumbCacheDir: thumbCacheDir,
 	}
 	ui.build()
 	ui.bindKeys()
@@ -143,7 +154,18 @@ func (ui *photoApp) build() {
 			ui.refreshStatus()
 		})
 	})
-	ui.moveButton = widget.NewButtonWithIcon("移动已选", theme.UploadIcon(), ui.moveSelected)
+	actionChoice := widget.NewRadioGroup([]string{"移动", "复制"}, func(choice string) {
+		if choice == "复制" {
+			ui.transferMode = photos.TransferCopy
+		} else {
+			ui.transferMode = photos.TransferMove
+		}
+		ui.refreshTransferAction()
+	})
+	actionChoice.Horizontal = true
+	actionChoice.SetSelected("移动")
+
+	ui.moveButton = widget.NewButtonWithIcon("移动已选", theme.UploadIcon(), ui.transferSelected)
 	ui.moveButton.Disable()
 
 	ui.list = widget.NewList(
@@ -180,7 +202,7 @@ func (ui *photoApp) build() {
 
 	top := container.NewVBox(
 		container.NewHBox(importButton, sourceButton, ui.sourceLabel, recursiveCheck),
-		container.NewHBox(targetButton, ui.targetLabel, ui.moveButton),
+		container.NewHBox(targetButton, ui.targetLabel, actionChoice, ui.moveButton),
 	)
 	sidebar := container.NewBorder(ui.countLabel, nil, nil, nil, ui.list)
 	previewPane := container.NewBorder(
@@ -232,9 +254,9 @@ func (ui *photoApp) bindKeys() {
 		case fyne.KeySpace:
 			ui.toggleCurrent()
 		case fyne.KeyReturn, fyne.KeyEnter:
-			ui.moveSelected()
+			ui.transferSelected()
 		case fyne.KeyM:
-			ui.moveSelected()
+			ui.transferSelected()
 		}
 	})
 }
@@ -280,6 +302,7 @@ func (ui *photoApp) loadItems(items []photos.Photo) {
 	if len(items) > 0 {
 		ui.setCurrent(0)
 		ui.list.Select(0)
+		ui.preloadThumbs(ui.scanToken.Load())
 	} else {
 		ui.mainImage.Image = nil
 		ui.mainImage.Refresh()
@@ -319,33 +342,76 @@ func (ui *photoApp) setCurrent(id int) {
 }
 
 func (ui *photoApp) loadThumb(id int, token int64) {
+	go ui.loadThumbNow(id, token)
+}
+
+func (ui *photoApp) loadThumbNow(id int, token int64) {
+	if ui.scanToken.Load() != token {
+		return
+	}
 	if id < 0 || id >= len(ui.items) {
 		return
 	}
 	item := ui.items[id]
+	if ui.scanToken.Load() != token {
+		return
+	}
 	if _, ok := ui.thumbs.Load(item.Path); ok {
 		return
 	}
 	if _, loaded := ui.loading.LoadOrStore(item.Path, struct{}{}); loaded {
 		return
 	}
+	img, err := ui.loadThumbImage(item.Path)
+	fyne.Do(func() {
+		ui.loading.Delete(item.Path)
+		if ui.scanToken.Load() != token {
+			return
+		}
+		if err != nil {
+			ui.errors.Store(item.Path, err.Error())
+		} else {
+			ui.thumbs.Store(item.Path, img)
+		}
+		if id < len(ui.items) {
+			ui.list.RefreshItem(id)
+		}
+	})
+}
+
+func (ui *photoApp) preloadThumbs(token int64) {
+	total := len(ui.items)
+	if total == 0 {
+		return
+	}
+	workers := min(total, max(2, runtime.NumCPU()))
+	workers = min(workers, 6)
+	jobs := make(chan int, total)
+
+	for range workers {
+		go func() {
+			for id := range jobs {
+				if ui.scanToken.Load() != token {
+					return
+				}
+				ui.loadThumbNow(id, token)
+			}
+		}()
+	}
+
 	go func() {
-		img, err := preview.LoadScaled(item.Path, 220)
-		fyne.Do(func() {
-			ui.loading.Delete(item.Path)
+		defer close(jobs)
+		for id := range ui.items {
 			if ui.scanToken.Load() != token {
 				return
 			}
-			if err != nil {
-				ui.errors.Store(item.Path, err.Error())
-			} else {
-				ui.thumbs.Store(item.Path, img)
-			}
-			if id < len(ui.items) {
-				ui.list.RefreshItem(id)
-			}
-		})
+			jobs <- id
+		}
 	}()
+}
+
+func (ui *photoApp) loadThumbImage(path string) (image.Image, error) {
+	return preview.LoadCachedScaled(path, 220, ui.thumbCacheDir)
 }
 
 func (ui *photoApp) goTo(id int) {
@@ -373,7 +439,7 @@ func (ui *photoApp) toggleCurrent() {
 	ui.goTo(ui.current + 1)
 }
 
-func (ui *photoApp) moveSelected() {
+func (ui *photoApp) transferSelected() {
 	if selectedCount(ui.items) == 0 {
 		ui.statusLabel.SetText("还没有挑选照片")
 		return
@@ -383,25 +449,42 @@ func (ui *photoApp) moveSelected() {
 		return
 	}
 
-	moved, errs := photos.MoveSelected(ui.items, ui.targetDir)
+	result, errs := photos.TransferSelected(ui.items, ui.targetDir, ui.transferMode)
+	action := ui.transferActionText()
 	if len(errs) > 0 {
-		ui.statusLabel.SetText(fmt.Sprintf("已移动 %d 张，%d 个文件失败：%s", moved, len(errs), errs[0]))
+		ui.statusLabel.SetText(fmt.Sprintf("已%s %d 张，%d 个文件失败：%s", action, result.Count, len(errs), errs[0]))
 	} else {
-		ui.statusLabel.SetText(fmt.Sprintf("已移动 %d 张照片到 %s", moved, compactPath(ui.targetDir)))
+		ui.statusLabel.SetText(fmt.Sprintf("已%s %d 张照片到 %s", action, result.Count, compactPath(ui.targetDir)))
 	}
 	message := ui.statusLabel.Text
-	ui.removeSelectedFromList()
+	if ui.transferMode == photos.TransferMove {
+		ui.removeTransferredFromList(result.Paths)
+	} else {
+		ui.clearTransferredSelection(result.Paths)
+	}
 	ui.statusLabel.SetText(message)
 }
 
-func (ui *photoApp) removeSelectedFromList() {
+func (ui *photoApp) removeTransferredFromList(paths []string) {
+	transferred := pathSet(paths)
 	remaining := make([]photos.Photo, 0, len(ui.items))
 	for _, item := range ui.items {
-		if !item.Selected {
+		if _, ok := transferred[item.Path]; !ok {
 			remaining = append(remaining, item)
 		}
 	}
 	ui.loadItems(remaining)
+}
+
+func (ui *photoApp) clearTransferredSelection(paths []string) {
+	transferred := pathSet(paths)
+	for i := range ui.items {
+		if _, ok := transferred[ui.items[i].Path]; ok {
+			ui.items[i].Selected = false
+			ui.list.RefreshItem(i)
+		}
+	}
+	ui.refreshStatus()
 }
 
 func (ui *photoApp) refreshStatus() {
@@ -416,6 +499,35 @@ func (ui *photoApp) refreshStatus() {
 	if total > 0 && ui.current >= 0 {
 		ui.statusLabel.SetText(fmt.Sprintf("%d / %d", ui.current+1, total))
 	}
+	ui.refreshTransferAction()
+}
+
+func (ui *photoApp) refreshTransferAction() {
+	if ui.moveButton == nil {
+		return
+	}
+	if ui.transferMode == photos.TransferCopy {
+		ui.moveButton.SetText("复制已选")
+		ui.moveButton.SetIcon(theme.ContentCopyIcon())
+		return
+	}
+	ui.moveButton.SetText("移动已选")
+	ui.moveButton.SetIcon(theme.UploadIcon())
+}
+
+func (ui *photoApp) transferActionText() string {
+	if ui.transferMode == photos.TransferCopy {
+		return "复制"
+	}
+	return "移动"
+}
+
+func pathSet(paths []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		set[path] = struct{}{}
+	}
+	return set
 }
 
 func selectedCount(items []photos.Photo) int {

@@ -86,6 +86,31 @@ func TestLoadAppliesRawTIFFOrientationToEmbeddedJPEG(t *testing.T) {
 	}
 }
 
+func TestLoadCachedScaledCreatesSessionCacheFile(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	path := filepath.Join(dir, "sample.jpg")
+	if err := os.WriteFile(path, encodeJPEG(t, 20, 12), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	img, err := LoadCachedScaled(path, 10, cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if img.Bounds().Dx() != 10 || img.Bounds().Dy() != 6 {
+		t.Fatalf("expected scaled image 10x6, got %dx%d", img.Bounds().Dx(), img.Bounds().Dy())
+	}
+
+	entries, err := os.ReadDir(cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 cache file, got %d", len(entries))
+	}
+}
+
 func TestApplyOrientationRotatesClockwise(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 2, 3))
 	red := color.RGBA{R: 255, A: 255}

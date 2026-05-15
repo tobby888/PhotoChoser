@@ -52,6 +52,54 @@ func TestMoveSelectedMovesPhotoAndXMP(t *testing.T) {
 	}
 }
 
+func TestCopySelectedCopiesPhotoAndXMP(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+	raw := filepath.Join(srcDir, "event.NEF")
+	xmp := filepath.Join(srcDir, "event.XMP")
+	writeFile(t, raw)
+	writeFile(t, xmp)
+
+	copied, errs := CopySelected([]Photo{{Path: raw, Name: "event.NEF", Selected: true}}, dstDir)
+	if len(errs) > 0 {
+		t.Fatal(errs[0])
+	}
+	if copied != 1 {
+		t.Fatalf("expected 1 copied photo, got %d", copied)
+	}
+	if _, err := os.Stat(filepath.Join(dstDir, "event.NEF")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dstDir, "event.XMP")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(raw); err != nil {
+		t.Fatalf("expected source raw to remain after copy, stat err: %v", err)
+	}
+	if _, err := os.Stat(xmp); err != nil {
+		t.Fatalf("expected source XMP to remain after copy, stat err: %v", err)
+	}
+}
+
+func TestTransferSelectedAvoidsOverwriteCollisions(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+	raw := filepath.Join(srcDir, "event.NEF")
+	writeFile(t, raw)
+	writeFile(t, filepath.Join(dstDir, "event.NEF"))
+
+	copied, errs := CopySelected([]Photo{{Path: raw, Name: "event.NEF", Selected: true}}, dstDir)
+	if len(errs) > 0 {
+		t.Fatal(errs[0])
+	}
+	if copied != 1 {
+		t.Fatalf("expected 1 copied photo, got %d", copied)
+	}
+	if _, err := os.Stat(filepath.Join(dstDir, "event_001.NEF")); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestFromPathsFiltersUnsupportedFilesAndDuplicates(t *testing.T) {
 	dir := t.TempDir()
 	raw := filepath.Join(dir, "event.ARW")

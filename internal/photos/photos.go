@@ -18,6 +18,18 @@ type Photo struct {
 	Selected bool
 }
 
+type TransferMode string
+
+const (
+	TransferMove TransferMode = "move"
+	TransferCopy TransferMode = "copy"
+)
+
+type TransferResult struct {
+	Count int
+	Paths []string
+}
+
 var supportedExtensions = map[string]struct{}{
 	".jpg": {}, ".jpeg": {}, ".png": {}, ".tif": {}, ".tiff": {},
 	".arw": {}, ".srf": {}, ".sr2": {},
@@ -131,27 +143,38 @@ func FromPaths(paths []string) []Photo {
 }
 
 func MoveSelected(items []Photo, targetDir string) (int, []error) {
+	result, errs := TransferSelected(items, targetDir, TransferMove)
+	return result.Count, errs
+}
+
+func CopySelected(items []Photo, targetDir string) (int, []error) {
+	result, errs := TransferSelected(items, targetDir, TransferCopy)
+	return result.Count, errs
+}
+
+func TransferSelected(items []Photo, targetDir string, mode TransferMode) (TransferResult, []error) {
 	if targetDir == "" {
-		return 0, []error{errors.New("target directory is empty")}
+		return TransferResult{}, []error{errors.New("target directory is empty")}
 	}
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
-		return 0, []error{err}
+		return TransferResult{}, []error{err}
 	}
 
-	var moved int
+	var result TransferResult
 	var errs []error
 	for _, item := range items {
 		if !item.Selected {
 			continue
 		}
-		if err := moveOne(item.Path, targetDir); err != nil {
+		if err := transferOne(item.Path, targetDir, mode); err != nil {
 			errs = append(errs, err)
 			continue
 		}
-		moveSidecarXMP(item.Path, targetDir)
-		moved++
+		transferSidecarXMP(item.Path, targetDir, mode)
+		result.Count++
+		result.Paths = append(result.Paths, item.Path)
 	}
-	return moved, errs
+	return result, errs
 }
 
 func photoFromPath(path string) Photo {
@@ -184,15 +207,31 @@ func moveOne(src string, targetDir string) error {
 	return copyThenRemove(src, dst)
 }
 
-func moveSidecarXMP(photoPath string, targetDir string) {
+func copyOne(src string, targetDir string) error {
+	dst := uniqueDestination(filepath.Join(targetDir, filepath.Base(src)))
+	return copyFile(src, dst)
+}
+
+func transferOne(src string, targetDir string, mode TransferMode) error {
+	switch mode {
+	case TransferMove:
+		return moveOne(src, targetDir)
+	case TransferCopy:
+		return copyOne(src, targetDir)
+	default:
+		return fmt.Errorf("unsupported transfer mode: %s", mode)
+	}
+}
+
+func transferSidecarXMP(photoPath string, targetDir string, mode TransferMode) {
 	sidecar := strings.TrimSuffix(photoPath, filepath.Ext(photoPath)) + ".xmp"
 	if _, err := os.Stat(sidecar); err == nil {
-		_ = moveOne(sidecar, targetDir)
+		_ = transferOne(sidecar, targetDir, mode)
 		return
 	}
 	sidecar = strings.TrimSuffix(photoPath, filepath.Ext(photoPath)) + ".XMP"
 	if _, err := os.Stat(sidecar); err == nil {
-		_ = moveOne(sidecar, targetDir)
+		_ = transferOne(sidecar, targetDir, mode)
 	}
 }
 
@@ -213,6 +252,13 @@ func uniqueDestination(path string) string {
 }
 
 func copyThenRemove(src string, dst string) error {
+	if err := copyFile(src, dst); err != nil {
+		return err
+	}
+	return os.Remove(src)
+}
+
+func copyFile(src string, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
@@ -238,5 +284,5 @@ func copyThenRemove(src string, dst string) error {
 	if err == nil {
 		_ = os.Chmod(dst, info.Mode())
 	}
-	return os.Remove(src)
+	return nil
 }
