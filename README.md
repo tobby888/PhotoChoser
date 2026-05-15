@@ -101,6 +101,7 @@ RAW 文件会优先读取相机写入文件里的内嵌 JPEG 预览，这比完�
 ```bash
 make test
 make build
+make build-windows
 make check-windows
 make package-macos
 ```
@@ -114,6 +115,20 @@ make build
 ```
 
 构建产物会输出到 `bin/photochoser`。
+
+在 Windows 上构建不会显示黑框的 GUI 程序：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
+```
+
+也可以使用：
+
+```bash
+make build-windows
+```
+
+Windows 构建产物会输出到 `bin/PhotoChoser.exe`。该构建会使用 `-ldflags="-H=windowsgui"`，从资源管理器双击启动时不会显示控制台黑框。
 
 ## 打包
 
