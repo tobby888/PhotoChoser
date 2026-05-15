@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"photochoser/internal/nativepicker"
 	"photochoser/internal/photos"
@@ -26,9 +27,21 @@ import (
 const (
 	thumbMaxSide        = 220
 	previewMaxSide      = 1280
+	previewLoadWait     = 45 * time.Millisecond
 	previewPrefetchNext = 3
+	previewPrefetchWait = 140 * time.Millisecond
 	thumbWorkerLimit    = 3
 )
+
+type previewResult struct {
+	img image.Image
+	err error
+}
+
+type previewJob struct {
+	done   chan struct{}
+	result previewResult
+}
 
 type photoApp struct {
 	window fyne.Window
@@ -61,6 +74,8 @@ type photoApp struct {
 
 	previewToken atomic.Int64
 	scanToken    atomic.Int64
+
+	thumbPreloadStarted atomic.Bool
 }
 
 type thumbRow struct {
@@ -308,10 +323,10 @@ func (ui *photoApp) loadItems(items []photos.Photo) {
 	ui.errors = sync.Map{}
 	ui.loading = sync.Map{}
 	ui.previewLoading = sync.Map{}
+	ui.thumbPreloadStarted.Store(false)
 	ui.scanToken.Add(1)
 	ui.list.Refresh()
 	if len(items) > 0 {
-		ui.setCurrent(0)
 		ui.list.Select(0)
 	} else {
 		ui.mainImage.Image = nil
@@ -335,9 +350,8 @@ func (ui *photoApp) setCurrent(id int) {
 		ui.mainImage.Image = imgValue.(image.Image)
 		ui.mainImage.Refresh()
 		ui.refreshStatus()
-		token := ui.scanToken.Load()
-		ui.preloadNearbyPreviews(id, token)
-		ui.preloadThumbs(token)
+		ui.preloadNearbyPreviews(id, ui.scanToken.Load(), token)
+		ui.preloadThumbsOnce(ui.scanToken.Load())
 		return
 	}
 
@@ -415,6 +429,12 @@ func (ui *photoApp) preloadThumbs(token int64) {
 	}()
 }
 
+func (ui *photoApp) preloadThumbsOnce(token int64) {
+	if ui.thumbPreloadStarted.CompareAndSwap(false, true) {
+		ui.preloadThumbs(token)
+	}
+}
+
 func (ui *photoApp) loadThumbImage(path string) (image.Image, error) {
 	return preview.LoadCachedScaled(path, thumbMaxSide, ui.previewCacheDir)
 }
@@ -430,9 +450,14 @@ func (ui *photoApp) showFastPreviewPlaceholder(item photos.Photo) {
 }
 
 func (ui *photoApp) loadCurrentPreview(id int, path string, name string, selected bool, token int64, scanToken int64) {
-	img, err := ui.loadPreviewImage(path)
+	time.Sleep(previewLoadWait)
+	if ui.previewToken.Load() != token || ui.scanToken.Load() != scanToken {
+		return
+	}
+
+	img, err := ui.loadPreviewImageShared(path)
 	fyne.Do(func() {
-		if ui.previewToken.Load() != token {
+		if ui.previewToken.Load() != token || ui.scanToken.Load() != scanToken {
 			return
 		}
 		if err != nil {
@@ -446,40 +471,57 @@ func (ui *photoApp) loadCurrentPreview(id int, path string, name string, selecte
 		ui.mainImage.Refresh()
 		ui.titleLabel.SetText(selectionMark(selected) + name)
 		ui.refreshStatus()
-		ui.preloadNearbyPreviews(id, scanToken)
-		ui.preloadThumbs(scanToken)
+		ui.preloadNearbyPreviews(id, scanToken, token)
+		ui.preloadThumbsOnce(scanToken)
 	})
 }
 
-func (ui *photoApp) preloadNearbyPreviews(current int, token int64) {
+func (ui *photoApp) preloadNearbyPreviews(current int, scanToken int64, previewToken int64) {
+	ids := make([]int, 0, previewPrefetchNext+1)
 	for offset := 1; offset <= previewPrefetchNext; offset++ {
-		ui.preloadPreview(current+offset, token)
+		ids = append(ids, current+offset)
 	}
-	ui.preloadPreview(current-1, token)
+	ids = append(ids, current-1)
+
+	go func() {
+		time.Sleep(previewPrefetchWait)
+		for _, id := range ids {
+			if ui.scanToken.Load() != scanToken || ui.previewToken.Load() != previewToken {
+				return
+			}
+			ui.preloadPreview(id, scanToken, previewToken)
+		}
+	}()
 }
 
-func (ui *photoApp) preloadPreview(id int, token int64) {
-	if id < 0 || id >= len(ui.items) || ui.scanToken.Load() != token {
+func (ui *photoApp) preloadPreview(id int, scanToken int64, previewToken int64) {
+	if id < 0 || id >= len(ui.items) || ui.scanToken.Load() != scanToken || ui.previewToken.Load() != previewToken {
 		return
 	}
 	item := ui.items[id]
 	if _, ok := ui.previewImages.Load(item.Path); ok {
 		return
 	}
-	if _, loaded := ui.previewLoading.LoadOrStore(item.Path, struct{}{}); loaded {
+	img, err := ui.loadPreviewImageShared(item.Path)
+	if err != nil || ui.scanToken.Load() != scanToken || ui.previewToken.Load() != previewToken {
 		return
 	}
-	go func(path string) {
-		defer ui.previewLoading.Delete(path)
-		if ui.scanToken.Load() != token {
-			return
-		}
-		img, err := ui.loadPreviewImage(path)
-		if err != nil || ui.scanToken.Load() != token {
-			return
-		}
-		ui.previewImages.Store(path, img)
-	}(item.Path)
+	ui.previewImages.Store(item.Path, img)
+}
+
+func (ui *photoApp) loadPreviewImageShared(path string) (image.Image, error) {
+	job := &previewJob{done: make(chan struct{})}
+	actual, loaded := ui.previewLoading.LoadOrStore(path, job)
+	if loaded {
+		existing := actual.(*previewJob)
+		<-existing.done
+		return existing.result.img, existing.result.err
+	}
+	defer ui.previewLoading.Delete(path)
+	defer close(job.done)
+
+	job.result.img, job.result.err = ui.loadPreviewImage(path)
+	return job.result.img, job.result.err
 }
 
 func (ui *photoApp) loadPreviewImage(path string) (image.Image, error) {
@@ -513,7 +555,6 @@ func (ui *photoApp) goTo(id int) {
 		id = len(ui.items) - 1
 	}
 	ui.list.Select(id)
-	ui.setCurrent(id)
 }
 
 func (ui *photoApp) toggleCurrent() {
