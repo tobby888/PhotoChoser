@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,7 +31,10 @@ const (
 	previewLoadWait     = 45 * time.Millisecond
 	previewPrefetchNext = 3
 	previewPrefetchWait = 140 * time.Millisecond
+	previewMemoryLimit  = previewPrefetchNext + 3
+	thumbMemoryLimit    = 360
 	thumbWorkerLimit    = 3
+	memoryTrimDelay     = 2 * time.Second
 )
 
 type previewResult struct {
@@ -57,8 +61,8 @@ type photoApp struct {
 	items   []photos.Photo
 	current int
 
-	thumbs         sync.Map
-	previewImages  sync.Map
+	thumbs         *imageCache
+	previewImages  *imageCache
 	errors         sync.Map
 	loading        sync.Map
 	previewLoading sync.Map
@@ -76,6 +80,7 @@ type photoApp struct {
 	scanToken    atomic.Int64
 
 	thumbPreloadStarted atomic.Bool
+	memoryTrimPending   atomic.Bool
 }
 
 type thumbRow struct {
@@ -134,9 +139,14 @@ func main() {
 		current:         -1,
 		transferMode:    photos.TransferMove,
 		previewCacheDir: previewCacheDir,
+		thumbs:          newImageCache(thumbMemoryLimit),
+		previewImages:   newImageCache(previewMemoryLimit),
 	}
 	ui.build()
 	ui.bindKeys()
+	fyneApp.Lifecycle().SetOnEnteredForeground(func() {
+		ui.restoreKeyboardFocus()
+	})
 
 	w.ShowAndRun()
 }
@@ -222,6 +232,7 @@ func (ui *photoApp) build() {
 	)
 	ui.list.OnSelected = func(id widget.ListItemID) {
 		ui.setCurrent(id)
+		ui.restoreKeyboardFocus()
 	}
 
 	top := container.NewVBox(
@@ -269,20 +280,30 @@ func (ui *photoApp) bindKeys() {
 	if !ok {
 		return
 	}
-	canvas.SetOnKeyDown(func(event *fyne.KeyEvent) {
-		switch event.Name {
-		case fyne.KeyRight:
-			ui.goTo(ui.current + 1)
-		case fyne.KeyLeft:
-			ui.goTo(ui.current - 1)
-		case fyne.KeySpace:
-			ui.toggleCurrent()
-		case fyne.KeyReturn, fyne.KeyEnter:
-			ui.transferSelected()
-		case fyne.KeyM:
-			ui.transferSelected()
-		}
-	})
+	canvas.SetOnKeyDown(ui.handleKey)
+	ui.restoreKeyboardFocus()
+}
+
+func (ui *photoApp) handleKey(event *fyne.KeyEvent) {
+	switch event.Name {
+	case fyne.KeyRight:
+		ui.goTo(ui.current + 1)
+	case fyne.KeyLeft:
+		ui.goTo(ui.current - 1)
+	case fyne.KeySpace:
+		ui.toggleCurrent()
+	case fyne.KeyReturn, fyne.KeyEnter:
+		ui.transferSelected()
+	case fyne.KeyM:
+		ui.transferSelected()
+	}
+}
+
+func (ui *photoApp) restoreKeyboardFocus() {
+	if ui.window == nil {
+		return
+	}
+	ui.window.Canvas().Unfocus()
 }
 
 func (ui *photoApp) scan() {
@@ -318,8 +339,7 @@ func (ui *photoApp) importFiles(paths []string) {
 func (ui *photoApp) loadItems(items []photos.Photo) {
 	ui.items = items
 	ui.current = -1
-	ui.thumbs = sync.Map{}
-	ui.previewImages = sync.Map{}
+	ui.clearImageCaches()
 	ui.errors = sync.Map{}
 	ui.loading = sync.Map{}
 	ui.previewLoading = sync.Map{}
@@ -343,11 +363,13 @@ func (ui *photoApp) setCurrent(id int) {
 	ui.current = id
 	item := ui.items[id]
 	ui.titleLabel.SetText(selectionMark(item.Selected) + item.Name)
-	ui.prunePreviewImages(id)
+	if ui.prunePreviewImages(id) {
+		ui.releaseUnusedMemorySoon()
+	}
 
 	token := ui.previewToken.Add(1)
 	if imgValue, ok := ui.previewImages.Load(item.Path); ok {
-		ui.mainImage.Image = imgValue.(image.Image)
+		ui.mainImage.Image = imgValue
 		ui.mainImage.Refresh()
 		ui.refreshStatus()
 		ui.preloadNearbyPreviews(id, ui.scanToken.Load(), token)
@@ -390,7 +412,9 @@ func (ui *photoApp) loadThumbNow(id int, token int64) {
 		if err != nil {
 			ui.errors.Store(item.Path, err.Error())
 		} else {
-			ui.thumbs.Store(item.Path, img)
+			if ui.thumbs.Store(item.Path, img) {
+				ui.releaseUnusedMemorySoon()
+			}
 		}
 		if id < len(ui.items) {
 			ui.list.RefreshItem(id)
@@ -406,9 +430,12 @@ func (ui *photoApp) preloadThumbs(token int64) {
 	workers := min(total, max(2, runtime.NumCPU()))
 	workers = min(workers, thumbWorkerLimit)
 	jobs := make(chan int, total)
+	var wg sync.WaitGroup
 
 	for range workers {
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			for id := range jobs {
 				if ui.scanToken.Load() != token {
 					return
@@ -427,6 +454,13 @@ func (ui *photoApp) preloadThumbs(token int64) {
 			jobs <- id
 		}
 	}()
+
+	go func() {
+		wg.Wait()
+		if ui.scanToken.Load() == token {
+			ui.releaseUnusedMemorySoon()
+		}
+	}()
 }
 
 func (ui *photoApp) preloadThumbsOnce(token int64) {
@@ -441,7 +475,7 @@ func (ui *photoApp) loadThumbImage(path string) (image.Image, error) {
 
 func (ui *photoApp) showFastPreviewPlaceholder(item photos.Photo) {
 	if imgValue, ok := ui.thumbs.Load(item.Path); ok {
-		ui.mainImage.Image = imgValue.(image.Image)
+		ui.mainImage.Image = imgValue
 		ui.mainImage.Refresh()
 		return
 	}
@@ -466,7 +500,9 @@ func (ui *photoApp) loadCurrentPreview(id int, path string, name string, selecte
 			ui.statusLabel.SetText("无法预览：" + err.Error())
 			return
 		}
-		ui.previewImages.Store(path, img)
+		if ui.previewImages.Store(path, img) {
+			ui.releaseUnusedMemorySoon()
+		}
 		ui.mainImage.Image = img
 		ui.mainImage.Refresh()
 		ui.titleLabel.SetText(selectionMark(selected) + name)
@@ -506,7 +542,9 @@ func (ui *photoApp) preloadPreview(id int, scanToken int64, previewToken int64) 
 	if err != nil || ui.scanToken.Load() != scanToken || ui.previewToken.Load() != previewToken {
 		return
 	}
-	ui.previewImages.Store(item.Path, img)
+	if ui.previewImages.Store(item.Path, img) {
+		ui.releaseUnusedMemorySoon()
+	}
 }
 
 func (ui *photoApp) loadPreviewImageShared(path string) (image.Image, error) {
@@ -528,20 +566,43 @@ func (ui *photoApp) loadPreviewImage(path string) (image.Image, error) {
 	return preview.LoadCachedScaled(path, previewMaxSide, ui.previewCacheDir)
 }
 
-func (ui *photoApp) prunePreviewImages(current int) {
+func (ui *photoApp) prunePreviewImages(current int) bool {
 	keep := make(map[string]struct{}, previewPrefetchNext+2)
 	for id := current - 1; id <= current+previewPrefetchNext; id++ {
 		if id >= 0 && id < len(ui.items) {
 			keep[ui.items[id].Path] = struct{}{}
 		}
 	}
-	ui.previewImages.Range(func(key any, value any) bool {
-		path := key.(string)
-		if _, ok := keep[path]; !ok {
-			ui.previewImages.Delete(path)
-		}
-		return true
-	})
+	return ui.previewImages.DeleteExcept(keep)
+}
+
+func (ui *photoApp) clearImageCaches() {
+	cleared := false
+	if ui.thumbs == nil {
+		ui.thumbs = newImageCache(thumbMemoryLimit)
+	} else if ui.thumbs.Clear() {
+		cleared = true
+	}
+	if ui.previewImages == nil {
+		ui.previewImages = newImageCache(previewMemoryLimit)
+	} else if ui.previewImages.Clear() {
+		cleared = true
+	}
+	if cleared {
+		ui.releaseUnusedMemorySoon()
+	}
+}
+
+func (ui *photoApp) releaseUnusedMemorySoon() {
+	if !ui.memoryTrimPending.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		time.Sleep(memoryTrimDelay)
+		runtime.GC()
+		debug.FreeOSMemory()
+		ui.memoryTrimPending.Store(false)
+	}()
 }
 
 func (ui *photoApp) goTo(id int) {

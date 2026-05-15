@@ -1,18 +1,25 @@
 package preview
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"image"
 	"image/gif"
 	"image/jpeg"
 	"image/png"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"golang.org/x/image/draw"
 	_ "golang.org/x/image/tiff"
+)
+
+const (
+	embeddedJPEGScanBufferSize = 256 * 1024
+	embeddedJPEGMaxBytes       = 128 << 20
 )
 
 func init() {
@@ -22,6 +29,12 @@ func init() {
 }
 
 func LoadScaled(path string, maxSide int) (image.Image, error) {
+	if maxSide > 0 && !isStandardImage(path) {
+		if img, err := loadEmbeddedJPEGScaled(path, maxSide); err == nil {
+			return Scale(img, maxSide), nil
+		}
+	}
+
 	img, err := Load(path)
 	if err != nil {
 		return nil, err
@@ -30,6 +43,22 @@ func LoadScaled(path string, maxSide int) (image.Image, error) {
 		return img, nil
 	}
 	return Scale(img, maxSide), nil
+}
+
+func loadEmbeddedJPEGScaled(path string, maxSide int) (image.Image, error) {
+	orientation := ReadOrientation(path)
+	jpegBytes, err := extractEmbeddedJPEGForMaxSide(path, maxSide)
+	if err != nil {
+		return nil, err
+	}
+	if orientation == orientationNormal {
+		orientation = readOrientationFromBytes(jpegBytes)
+	}
+	img, err := jpeg.Decode(bytes.NewReader(jpegBytes))
+	if err != nil {
+		return nil, err
+	}
+	return ApplyOrientation(img, orientation), nil
 }
 
 func Load(path string) (image.Image, error) {
@@ -88,47 +117,112 @@ func Scale(src image.Image, maxSide int) image.Image {
 }
 
 func ExtractEmbeddedJPEG(path string) ([]byte, error) {
-	data, err := os.ReadFile(path)
+	return extractEmbeddedJPEGForMaxSide(path, 0)
+}
+
+func extractEmbeddedJPEGForMaxSide(path string, maxSide int) ([]byte, error) {
+	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
+	defer file.Close()
 
-	var best []byte
-	var bestArea int
-	for _, candidate := range jpegCandidates(data) {
-		cfg, err := jpeg.DecodeConfig(bytes.NewReader(candidate))
-		if err != nil {
-			continue
-		}
-		area := cfg.Width * cfg.Height
-		if area > bestArea || (area == bestArea && len(candidate) > len(best)) {
-			best = candidate
-			bestArea = area
-		}
-	}
-	if len(best) == 0 {
-		return nil, errors.New("no embedded JPEG preview found")
-	}
-	return best, nil
+	return extractEmbeddedJPEG(file, maxSide)
 }
 
-func jpegCandidates(data []byte) [][]byte {
-	var candidates [][]byte
-	for i := 0; i < len(data)-3; i++ {
-		if data[i] != 0xff || data[i+1] != 0xd8 || data[i+2] != 0xff {
+func extractEmbeddedJPEG(reader io.Reader, maxSide int) ([]byte, error) {
+	var choice embeddedJPEGChoice
+
+	buffered := bufio.NewReaderSize(reader, embeddedJPEGScanBufferSize)
+	state := 0
+	var candidate []byte
+	for {
+		b, err := buffered.ReadByte()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		if candidate != nil {
+			candidate = append(candidate, b)
+			if len(candidate) > embeddedJPEGMaxBytes {
+				candidate = nil
+				state = 0
+				continue
+			}
+			if len(candidate) >= 2 && candidate[len(candidate)-2] == 0xff && candidate[len(candidate)-1] == 0xd9 {
+				choice.keep(candidate, maxSide)
+				candidate = nil
+				state = 0
+			}
 			continue
 		}
-		endOffset := bytes.Index(data[i+2:], []byte{0xff, 0xd9})
-		if endOffset < 0 {
-			continue
-		}
-		end := i + 2 + endOffset + 2
-		if end > i {
-			candidates = append(candidates, data[i:end])
-			i = end - 1
+
+		switch state {
+		case 0:
+			if b == 0xff {
+				state = 1
+			}
+		case 1:
+			switch b {
+			case 0xd8:
+				state = 2
+			case 0xff:
+				state = 1
+			default:
+				state = 0
+			}
+		case 2:
+			if b == 0xff {
+				candidate = []byte{0xff, 0xd8, 0xff}
+			} else {
+				state = 0
+			}
 		}
 	}
-	return candidates
+
+	if best := choice.best(); len(best) > 0 {
+		return best, nil
+	}
+	return nil, errors.New("no embedded JPEG preview found")
+}
+
+type embeddedJPEGChoice struct {
+	enough       []byte
+	enoughArea   int
+	fallback     []byte
+	fallbackArea int
+}
+
+func (choice *embeddedJPEGChoice) keep(candidate []byte, maxSide int) {
+	cfg, err := jpeg.DecodeConfig(bytes.NewReader(candidate))
+	if err != nil {
+		return
+	}
+
+	area := cfg.Width * cfg.Height
+	longSide := max(cfg.Width, cfg.Height)
+	if maxSide > 0 && longSide >= maxSide {
+		if len(choice.enough) == 0 || area < choice.enoughArea || (area == choice.enoughArea && len(candidate) < len(choice.enough)) {
+			choice.enough = candidate
+			choice.enoughArea = area
+		}
+		return
+	}
+
+	if area > choice.fallbackArea || (area == choice.fallbackArea && len(candidate) > len(choice.fallback)) {
+		choice.fallback = candidate
+		choice.fallbackArea = area
+	}
+}
+
+func (choice *embeddedJPEGChoice) best() []byte {
+	if len(choice.enough) > 0 {
+		return choice.enough
+	}
+	return choice.fallback
 }
 
 func isStandardImage(path string) bool {

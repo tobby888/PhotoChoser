@@ -41,6 +41,65 @@ func TestExtractEmbeddedJPEGChoosesLargestPreview(t *testing.T) {
 	}
 }
 
+func TestExtractEmbeddedJPEGForMaxSideChoosesSmallEnoughPreview(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "multi-preview.arw")
+
+	small := encodeJPEG(t, 30, 20)
+	medium := encodeJPEG(t, 80, 50)
+	large := encodeJPEG(t, 160, 100)
+	data := bytes.Join([][]byte{
+		[]byte("raw-prefix"),
+		small,
+		[]byte("raw-middle"),
+		large,
+		[]byte("raw-more"),
+		medium,
+		[]byte("raw-suffix"),
+	}, nil)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := extractEmbeddedJPEGForMaxSide(path, 60)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := jpeg.DecodeConfig(bytes.NewReader(got))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Width != 80 || cfg.Height != 50 {
+		t.Fatalf("expected smallest preview large enough for 60px side, got %dx%d", cfg.Width, cfg.Height)
+	}
+}
+
+func TestExtractEmbeddedJPEGFindsPreviewAfterLargePrefix(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "offset.arw")
+
+	data := bytes.Join([][]byte{
+		bytes.Repeat([]byte{0x7a}, embeddedJPEGScanBufferSize+17),
+		encodeJPEG(t, 18, 12),
+		[]byte("raw-suffix"),
+	}, nil)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ExtractEmbeddedJPEG(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := jpeg.DecodeConfig(bytes.NewReader(got))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Width != 18 || cfg.Height != 12 {
+		t.Fatalf("expected embedded preview 18x12, got %dx%d", cfg.Width, cfg.Height)
+	}
+}
+
 func TestScaleKeepsAspectRatio(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 400, 200))
 	scaled := Scale(img, 100)
