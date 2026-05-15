@@ -10,10 +10,11 @@ PhotoChoser is a Go desktop app for event photographers who need fast same-day p
 - Keep the project in git and commit completed changes.
 - The first-screen experience must be the usable photo selection app, not a landing page or demo shell.
 - Support fast viewing of many event photos from camera cards and local folders.
-- Support system-native multi-file selection so the user can select many photos at once and import all of them into the app.
-- Keep directory scanning available as an optional workflow, including recursive scanning.
+- Support system-native folder selection so the user imports a whole photo folder, not individual photo files.
+- Keep directory scanning available, including recursive scanning.
 - Use system-native folder selection for choosing scan folders and target folders; do not use Fyne's internal folder picker for this.
 - Show a thumbnail list and a large preview for the current photo.
+- Rotate JPEG previews according to EXIF/TIFF orientation metadata before displaying them.
 - Use shortcuts for fast culling: left/right to navigate, space to toggle selection, `M` or Enter to move selected photos.
 - Move all selected photos to the target folder, preserving filenames and avoiding overwrite collisions with suffixes.
 - Move same-name `.xmp` or `.XMP` sidecar files together with RAW files.
@@ -75,4 +76,3 @@ make check-windows
 ```
 
 For changes that affect RAW preview on macOS, also test at least one real `.ARW` file with `sips` or through `make run` when a camera card is mounted.
-

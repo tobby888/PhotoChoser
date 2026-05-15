@@ -33,6 +33,7 @@ func LoadScaled(path string, maxSide int) (image.Image, error) {
 }
 
 func Load(path string) (image.Image, error) {
+	orientation := ReadOrientation(path)
 	if isStandardImage(path) {
 		file, err := os.Open(path)
 		if err != nil {
@@ -42,15 +43,18 @@ func Load(path string) (image.Image, error) {
 
 		img, _, err := image.Decode(file)
 		if err == nil {
-			return img, nil
+			return ApplyOrientation(img, orientation), nil
 		}
 	}
 
 	jpegBytes, err := ExtractEmbeddedJPEG(path)
 	if err == nil {
+		if orientation == orientationNormal {
+			orientation = readOrientationFromBytes(jpegBytes)
+		}
 		img, err := jpeg.Decode(bytes.NewReader(jpegBytes))
 		if err == nil {
-			return img, nil
+			return ApplyOrientation(img, orientation), nil
 		}
 	}
 

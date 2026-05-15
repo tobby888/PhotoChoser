@@ -109,7 +109,7 @@ func main() {
 func (ui *photoApp) build() {
 	ui.sourceLabel = widget.NewLabel("未导入照片")
 	ui.targetLabel = widget.NewLabel("未选择目标目录")
-	ui.statusLabel = widget.NewLabel("请选择多张照片导入，或扫描照片目录")
+	ui.statusLabel = widget.NewLabel("请选择照片文件夹导入，或扫描照片目录")
 	ui.countLabel = widget.NewLabel("0 张 / 已选 0 张")
 	ui.titleLabel = widget.NewLabel("没有照片")
 	ui.titleLabel.TextStyle = fyne.TextStyle{Bold: true}
@@ -126,18 +126,14 @@ func (ui *photoApp) build() {
 	})
 	recursiveCheck.SetChecked(true)
 
-	importButton := widget.NewButtonWithIcon("导入照片", theme.FileIcon(), func() {
-		ui.openFiles("选择要导入的照片", ui.initialSourceDir(), func(paths []string) {
-			ui.importFiles(paths)
+	importButton := widget.NewButtonWithIcon("导入文件夹", theme.FolderOpenIcon(), func() {
+		ui.openFolder("选择照片文件夹", ui.initialSourceDir(), func(path string) {
+			ui.loadSourceFolder(path)
 		})
 	})
 	sourceButton := widget.NewButtonWithIcon("扫描目录", theme.FolderOpenIcon(), func() {
 		ui.openFolder("选择照片目录", ui.initialSourceDir(), func(path string) {
-			ui.sourceDir = path
-			ui.sourceFiles = nil
-			ui.sourceBaseDir = path
-			ui.sourceLabel.SetText(compactPath(path))
-			ui.scan()
+			ui.loadSourceFolder(path)
 		})
 	})
 	targetButton := widget.NewButtonWithIcon("目标目录", theme.FolderIcon(), func() {
@@ -250,6 +246,14 @@ func (ui *photoApp) scan() {
 		return
 	}
 	ui.loadItems(items)
+}
+
+func (ui *photoApp) loadSourceFolder(path string) {
+	ui.sourceDir = path
+	ui.sourceFiles = nil
+	ui.sourceBaseDir = path
+	ui.sourceLabel.SetText(compactPath(path))
+	ui.scan()
 }
 
 func (ui *photoApp) importFiles(paths []string) {

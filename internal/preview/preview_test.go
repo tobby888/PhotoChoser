@@ -2,6 +2,7 @@ package preview
 
 import (
 	"bytes"
+	"encoding/binary"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -48,6 +49,62 @@ func TestScaleKeepsAspectRatio(t *testing.T) {
 	}
 }
 
+func TestLoadAppliesJPEGOrientation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "portrait.jpg")
+	if err := os.WriteFile(path, addEXIFOrientation(encodeJPEG(t, 2, 3), 6), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	img, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if img.Bounds().Dx() != 3 || img.Bounds().Dy() != 2 {
+		t.Fatalf("expected rotated image 3x2, got %dx%d", img.Bounds().Dx(), img.Bounds().Dy())
+	}
+}
+
+func TestLoadAppliesRawTIFFOrientationToEmbeddedJPEG(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "portrait.arw")
+	data := bytes.Join([][]byte{
+		tiffHeaderWithOrientation(8),
+		[]byte("raw-data"),
+		encodeJPEG(t, 2, 3),
+	}, nil)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	img, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if img.Bounds().Dx() != 3 || img.Bounds().Dy() != 2 {
+		t.Fatalf("expected rotated embedded preview 3x2, got %dx%d", img.Bounds().Dx(), img.Bounds().Dy())
+	}
+}
+
+func TestApplyOrientationRotatesClockwise(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 2, 3))
+	red := color.RGBA{R: 255, A: 255}
+	blue := color.RGBA{B: 255, A: 255}
+	img.Set(0, 0, red)
+	img.Set(1, 2, blue)
+
+	rotated := ApplyOrientation(img, 6)
+	if rotated.Bounds().Dx() != 3 || rotated.Bounds().Dy() != 2 {
+		t.Fatalf("expected rotated bounds 3x2, got %dx%d", rotated.Bounds().Dx(), rotated.Bounds().Dy())
+	}
+	if got := color.RGBAModel.Convert(rotated.At(2, 0)); got != red {
+		t.Fatalf("expected top-left source pixel at (2,0), got %#v", got)
+	}
+	if got := color.RGBAModel.Convert(rotated.At(0, 1)); got != blue {
+		t.Fatalf("expected bottom-right source pixel at (0,1), got %#v", got)
+	}
+}
+
 func encodeJPEG(t *testing.T, width int, height int) []byte {
 	t.Helper()
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
@@ -61,4 +118,42 @@ func encodeJPEG(t *testing.T, width int, height int) []byte {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
+}
+
+func addEXIFOrientation(jpegBytes []byte, orientation uint16) []byte {
+	exif := []byte("Exif\x00\x00")
+	tiff := make([]byte, 8+2+12+4)
+	copy(tiff[:2], "II")
+	binary.LittleEndian.PutUint16(tiff[2:4], 42)
+	binary.LittleEndian.PutUint32(tiff[4:8], 8)
+	binary.LittleEndian.PutUint16(tiff[8:10], 1)
+	entry := tiff[10:22]
+	binary.LittleEndian.PutUint16(entry[0:2], 0x0112)
+	binary.LittleEndian.PutUint16(entry[2:4], 3)
+	binary.LittleEndian.PutUint32(entry[4:8], 1)
+	binary.LittleEndian.PutUint16(entry[8:10], orientation)
+	exif = append(exif, tiff...)
+
+	segment := []byte{0xff, 0xe1, 0, 0}
+	binary.BigEndian.PutUint16(segment[2:4], uint16(len(exif)+2))
+	segment = append(segment, exif...)
+
+	out := append([]byte{}, jpegBytes[:2]...)
+	out = append(out, segment...)
+	out = append(out, jpegBytes[2:]...)
+	return out
+}
+
+func tiffHeaderWithOrientation(orientation uint16) []byte {
+	tiff := make([]byte, 8+2+12+4)
+	copy(tiff[:2], "II")
+	binary.LittleEndian.PutUint16(tiff[2:4], 42)
+	binary.LittleEndian.PutUint32(tiff[4:8], 8)
+	binary.LittleEndian.PutUint16(tiff[8:10], 1)
+	entry := tiff[10:22]
+	binary.LittleEndian.PutUint16(entry[0:2], 0x0112)
+	binary.LittleEndian.PutUint16(entry[2:4], 3)
+	binary.LittleEndian.PutUint32(entry[4:8], 1)
+	binary.LittleEndian.PutUint16(entry[8:10], orientation)
+	return tiff
 }
