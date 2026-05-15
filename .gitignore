@@ -1,0 +1,12 @@
+.DS_Store
+Thumbs.db
+
+# Go build output
+/bin/
+/dist/
+*.exe
+*.test
+
+# Local app/runtime caches
+/.fyne/
+/.cache/
