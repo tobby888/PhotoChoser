@@ -183,3 +183,5 @@ git push origin v0.1.0
 
 - `PhotoChoser-<version>-windows-amd64.zip`
 - `PhotoChoser-<version>-macos-<arch>.dmg`
+
+如果发布步骤报 `403 Resource not accessible by integration`，说明 GitHub Actions 的默认 token 没有创建 release 的写权限。到仓库的 `Settings` -> `Actions` -> `General` -> `Workflow permissions`，选择 `Read and write permissions`，保存后重新运行失败的 `Release` workflow。

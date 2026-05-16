@@ -92,6 +92,8 @@ jobs:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
     needs: [build-macos, build-windows]
+    permissions:
+      contents: write
     steps:
       - name: Resolve version
         shell: bash
@@ -115,6 +117,7 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
+          token: ${{ secrets.GITHUB_TOKEN }}
           tag_name: ${{ env.TAG }}
           target_commitish: ${{ github.sha }}
           name: PhotoChoser ${{ env.VERSION }}
