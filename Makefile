@@ -18,7 +18,7 @@ MKDIR_CHECK_WINDOWS = mkdir -p "$(CHECK_WINDOWS_DIR)"
 RM_ARTIFACTS = rm -rf bin dist
 endif
 
-.PHONY: run test build build-mac build-windows package-macos dmg check-windows clean
+.PHONY: run test build build-mac build-windows package-windows package-macos dmg check-windows clean
 
 run:
 	$(GOENV) go run ./cmd/photochoser
@@ -41,6 +41,9 @@ dmg: package-macos
 
 build-windows:
 	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1
+
+package-windows:
+	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package_windows.ps1
 
 check-windows:
 	$(MKDIR_CHECK_WINDOWS)

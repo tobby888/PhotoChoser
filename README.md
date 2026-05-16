@@ -105,6 +105,7 @@ RAW 文件会优先读取相机写入文件里的内嵌 JPEG 预览，这比完�
 make test
 make build
 make build-windows
+make package-windows
 make check-windows
 make package-macos
 ```
@@ -135,6 +136,20 @@ Windows 构建产物会输出到 `bin/PhotoChoser.exe`。该构建会使用 `-ld
 
 ## 打包
 
+Windows 上可以生成用于发布的 zip 包：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\package_windows.ps1
+```
+
+也可以使用：
+
+```bash
+make package-windows
+```
+
+构建产物会输出到 `dist/release/PhotoChoser-<version>-windows-amd64.zip`。
+
 macOS 上可以直接生成可运行的 `.app` 和可分发的 `.dmg`：
 
 ```bash
@@ -145,6 +160,7 @@ make package-macos
 
 - `dist/macos/PhotoChoser.app`
 - `dist/PhotoChoser-macos.dmg`
+- `dist/release/PhotoChoser-<version>-macos-<arch>.dmg`
 
 `PhotoChoser.app` 可以直接双击运行；`PhotoChoser-macos.dmg` 打开后可将 PhotoChoser 拖入 Applications。脚本使用系统自带的 `hdiutil` 制作 DMG，并对 app bundle 做 ad-hoc 签名，方便本机运行和测试。
 
@@ -153,3 +169,17 @@ make package-macos
 ```bash
 APP_VERSION=1.0.0 BUILD_VERSION=100 make package-macos
 ```
+
+## GitHub Releases
+
+推送 `v*` 标签会自动触发 GitHub Actions 构建 Windows 和 macOS 版本，并把产物上传到对应的 GitHub Release：
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+也可以在 GitHub Actions 页面手动运行 `Release` workflow，并填写版本号。自动发布的产物包括：
+
+- `PhotoChoser-<version>-windows-amd64.zip`
+- `PhotoChoser-<version>-macos-<arch>.dmg`

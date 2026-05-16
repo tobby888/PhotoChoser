@@ -42,8 +42,10 @@ PhotoChoser is a Go desktop app for event photographers who need fast same-day p
 - RAW and image preview loading: `internal/preview`
 - Native file/folder picker wrappers: `internal/nativepicker`
 - Cross-platform build check: `.github/workflows/build.yml`
+- Release workflow: `.github/workflows/release.yml`
 - Project quick commands: `Makefile`
 - Windows GUI build helper: `scripts/build-windows.ps1`
+- Windows release package helper: `scripts/package_windows.ps1`
 
 ## Quick Run
 
@@ -52,6 +54,7 @@ PhotoChoser is a Go desktop app for event photographers who need fast same-day p
 - Build local binary: `make build`
 - Build macOS app bundle and DMG: `make package-macos`
 - Build Windows GUI binary without a console window: `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1`
+- Build Windows release zip: `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\package_windows.ps1`
 - Check Windows-only packages from macOS: `make check-windows`
 
 The Makefile keeps Go caches inside `.cache/` so Codex sandboxed runs do not write to the user-level Go cache.
@@ -61,6 +64,7 @@ The Makefile keeps Go caches inside `.cache/` so Codex sandboxed runs do not wri
 - Use `make package-macos` on macOS to create both `dist/macos/PhotoChoser.app` and `dist/PhotoChoser-macos.dmg`.
 - The packaging script is `scripts/package_macos.sh`; it does not require Fyne CLI.
 - The app bundle is ad-hoc signed for local testing, but it is not notarized for public distribution.
+- GitHub Releases are created by `.github/workflows/release.yml` when a `v*` tag is pushed or the workflow is run manually.
 
 ## Known Context
 
@@ -86,6 +90,7 @@ Run these before handing off meaningful code changes:
 make test
 make build
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\package_windows.ps1
 make check-windows
 ```
 

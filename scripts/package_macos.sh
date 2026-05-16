@@ -9,6 +9,7 @@ fi
 APP_NAME="${APP_NAME:-PhotoChoser}"
 BUNDLE_ID="${BUNDLE_ID:-com.photochoser.desktop}"
 DIST_DIR="${DIST_DIR:-dist}"
+RELEASE_DIR="${RELEASE_DIR:-$DIST_DIR/release}"
 BUILD_DIR="$DIST_DIR/macos"
 APP_DIR="$BUILD_DIR/$APP_NAME.app"
 CONTENTS_DIR="$APP_DIR/Contents"
@@ -22,9 +23,11 @@ GOMODCACHE="${GOMODCACHE:-$PWD/.cache/mod}"
 GOARCH_VALUE="${GOARCH:-$(go env GOARCH)}"
 APP_VERSION="${APP_VERSION:-0.1.0}"
 BUILD_VERSION="${BUILD_VERSION:-1}"
+ARTIFACT_VERSION="${ARTIFACT_VERSION:-$APP_VERSION}"
+DMG_ARTIFACT="$RELEASE_DIR/$APP_NAME-$ARTIFACT_VERSION-macos-$GOARCH_VALUE.dmg"
 
 rm -rf "$APP_DIR" "$DMG_ROOT" "$TMP_DMG" "$DMG_PATH"
-mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$DMG_ROOT"
+mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$DMG_ROOT" "$RELEASE_DIR"
 
 echo "Building $APP_NAME for darwin/$GOARCH_VALUE..."
 GOOS=darwin GOARCH="$GOARCH_VALUE" CGO_ENABLED=1 GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" \
@@ -76,7 +79,9 @@ echo "Creating DMG..."
 hdiutil create -volname "$APP_NAME" -srcfolder "$DMG_ROOT" -ov -format UDRW "$TMP_DMG" >/dev/null
 hdiutil convert "$TMP_DMG" -format UDZO -imagekey zlib-level=9 -o "$DMG_PATH" >/dev/null
 rm -f "$TMP_DMG"
+cp "$DMG_PATH" "$DMG_ARTIFACT"
 
 echo "Created:"
 echo "  $APP_DIR"
 echo "  $DMG_PATH"
+echo "  $DMG_ARTIFACT"
