@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -25,6 +26,8 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
+
+var errStalePreview = errors.New("stale preview request")
 
 const (
 	thumbMaxSide        = 220
@@ -100,6 +103,7 @@ type photoApp struct {
 	thumbWorkerStopOnce  sync.Once
 	thumbFocusID         atomic.Int64
 	thumbBackgroundToken atomic.Int64
+	thumbLoadGate        sync.RWMutex
 }
 
 type thumbRow struct {
@@ -716,7 +720,14 @@ func (ui *photoApp) loadThumbNow(job thumbJob) {
 	if _, loaded := ui.loading.LoadOrStore(item.Path, struct{}{}); loaded {
 		return
 	}
+	ui.thumbLoadGate.RLock()
+	if ui.shouldSkipThumbJob(job) {
+		ui.thumbLoadGate.RUnlock()
+		ui.loading.Delete(item.Path)
+		return
+	}
 	img, err := ui.loadThumbImage(item.Path)
+	ui.thumbLoadGate.RUnlock()
 	fyne.Do(func() {
 		ui.loading.Delete(item.Path)
 		if ui.scanToken.Load() != token {
@@ -800,7 +811,7 @@ func (ui *photoApp) loadCurrentPreview(id int, path string, name string, selecte
 		return
 	}
 
-	img, err := ui.loadPreviewImageShared(path)
+	img, err := ui.loadSelectedPreviewExclusive(path, token, scanToken)
 	fyne.Do(func() {
 		if ui.previewToken.Load() != token || ui.scanToken.Load() != scanToken {
 			ui.currentPreviewToken.CompareAndSwap(token, 0)
@@ -826,6 +837,15 @@ func (ui *photoApp) loadCurrentPreview(id int, path string, name string, selecte
 		ui.preloadNearbyPreviews(id, scanToken, token)
 		ui.preloadThumbs(scanToken)
 	})
+}
+
+func (ui *photoApp) loadSelectedPreviewExclusive(path string, token int64, scanToken int64) (image.Image, error) {
+	ui.thumbLoadGate.Lock()
+	defer ui.thumbLoadGate.Unlock()
+	if ui.previewToken.Load() != token || ui.scanToken.Load() != scanToken {
+		return nil, errStalePreview
+	}
+	return ui.loadPreviewImageShared(path)
 }
 
 func (ui *photoApp) preloadNearbyPreviews(current int, scanToken int64, previewToken int64) {
@@ -854,13 +874,22 @@ func (ui *photoApp) preloadPreview(id int, scanToken int64, previewToken int64) 
 	if _, ok := ui.previewImages.Load(item.Path); ok {
 		return
 	}
-	img, err := ui.loadPreviewImageShared(item.Path)
+	img, err := ui.loadBackgroundPreviewShared(item.Path, scanToken, previewToken)
 	if err != nil || ui.scanToken.Load() != scanToken || ui.previewToken.Load() != previewToken {
 		return
 	}
 	if ui.previewImages.Store(item.Path, img) {
 		ui.releaseUnusedMemorySoon()
 	}
+}
+
+func (ui *photoApp) loadBackgroundPreviewShared(path string, scanToken int64, previewToken int64) (image.Image, error) {
+	ui.thumbLoadGate.RLock()
+	defer ui.thumbLoadGate.RUnlock()
+	if ui.scanToken.Load() != scanToken || ui.previewToken.Load() != previewToken || ui.currentPreviewToken.Load() != 0 {
+		return nil, errStalePreview
+	}
+	return ui.loadPreviewImageShared(path)
 }
 
 func (ui *photoApp) loadPreviewImageShared(path string) (image.Image, error) {

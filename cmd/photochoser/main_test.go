@@ -112,6 +112,36 @@ func TestShouldSkipThumbJobWhileCurrentPreviewLoads(t *testing.T) {
 	}
 }
 
+func TestThumbLoadGateBlocksThumbnailsForSelectedPreview(t *testing.T) {
+	ui := &photoApp{}
+	locked := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan struct{})
+
+	go func() {
+		ui.thumbLoadGate.Lock()
+		close(locked)
+		<-release
+		ui.thumbLoadGate.Unlock()
+	}()
+	<-locked
+
+	go func() {
+		ui.thumbLoadGate.RLock()
+		ui.thumbLoadGate.RUnlock()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("expected selected preview lock to block thumbnail loading")
+	default:
+	}
+
+	close(release)
+	<-done
+}
+
 func TestPreferredItemIDKeepsCurrentPath(t *testing.T) {
 	items := []photos.Photo{
 		{Path: "/card/DCIM/a.ARW", Name: "a.ARW"},
