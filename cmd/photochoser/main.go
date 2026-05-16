@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"image"
+	"image/color"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -88,8 +89,20 @@ type thumbRow struct {
 
 	image    *canvas.Image
 	name     *widget.Label
-	selected *widget.Label
+	selected *selectionBadge
 	error    *widget.Label
+}
+
+type selectionBadge struct {
+	widget.BaseWidget
+	selected bool
+}
+
+type selectionBadgeRenderer struct {
+	badge   *selectionBadge
+	circle  *canvas.Circle
+	check   *canvas.Text
+	objects []fyne.CanvasObject
 }
 
 func newThumbRow() *thumbRow {
@@ -100,11 +113,10 @@ func newThumbRow() *thumbRow {
 	row := &thumbRow{
 		image:    img,
 		name:     widget.NewLabel(""),
-		selected: widget.NewLabel(""),
+		selected: newSelectionBadge(),
 		error:    widget.NewLabel(""),
 	}
 	row.name.Truncation = fyne.TextTruncateEllipsis
-	row.selected.Alignment = fyne.TextAlignCenter
 	row.error.TextStyle = fyne.TextStyle{Italic: true}
 	row.ExtendBaseWidget(row)
 	return row
@@ -120,6 +132,73 @@ func (row *thumbRow) CreateRenderer() fyne.WidgetRenderer {
 	)
 	return widget.NewSimpleRenderer(content)
 }
+
+func newSelectionBadge() *selectionBadge {
+	badge := &selectionBadge{}
+	badge.ExtendBaseWidget(badge)
+	return badge
+}
+
+func (badge *selectionBadge) SetSelected(selected bool) {
+	if badge.selected == selected {
+		return
+	}
+	badge.selected = selected
+	badge.Refresh()
+}
+
+func (badge *selectionBadge) CreateRenderer() fyne.WidgetRenderer {
+	circle := canvas.NewCircle(color.Transparent)
+	circle.StrokeWidth = 2
+	check := canvas.NewText("✓", color.White)
+	check.Alignment = fyne.TextAlignCenter
+	check.TextStyle = fyne.TextStyle{Bold: true}
+	check.TextSize = 17
+
+	renderer := &selectionBadgeRenderer{
+		badge:   badge,
+		circle:  circle,
+		check:   check,
+		objects: []fyne.CanvasObject{circle, check},
+	}
+	renderer.Refresh()
+	return renderer
+}
+
+func (renderer *selectionBadgeRenderer) Layout(size fyne.Size) {
+	const badgeSize float32 = 26
+	const checkHeight float32 = 22
+	x := (size.Width - badgeSize) / 2
+	y := (size.Height - badgeSize) / 2
+	renderer.circle.Move(fyne.NewPos(x, y))
+	renderer.circle.Resize(fyne.NewSize(badgeSize, badgeSize))
+	renderer.check.Move(fyne.NewPos(x, y+(badgeSize-checkHeight)/2-1))
+	renderer.check.Resize(fyne.NewSize(badgeSize, checkHeight))
+}
+
+func (renderer *selectionBadgeRenderer) MinSize() fyne.Size {
+	return fyne.NewSize(42, 70)
+}
+
+func (renderer *selectionBadgeRenderer) Refresh() {
+	if renderer.badge.selected {
+		renderer.circle.FillColor = color.NRGBA{R: 28, G: 142, B: 80, A: 255}
+		renderer.circle.StrokeColor = color.NRGBA{R: 23, G: 116, B: 67, A: 255}
+		renderer.check.Show()
+	} else {
+		renderer.circle.FillColor = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
+		renderer.circle.StrokeColor = color.NRGBA{R: 160, G: 166, B: 176, A: 255}
+		renderer.check.Hide()
+	}
+	renderer.circle.Refresh()
+	renderer.check.Refresh()
+}
+
+func (renderer *selectionBadgeRenderer) Objects() []fyne.CanvasObject {
+	return renderer.objects
+}
+
+func (renderer *selectionBadgeRenderer) Destroy() {}
 
 func main() {
 	previewCacheDir, _ := os.MkdirTemp("", "photochoser-previews-*")
@@ -213,10 +292,7 @@ func (ui *photoApp) build() {
 			row := object.(*thumbRow)
 			item := ui.items[id]
 			row.name.SetText(item.Name)
-			row.selected.SetText("")
-			if item.Selected {
-				row.selected.SetText("✓")
-			}
+			row.selected.SetSelected(item.Selected)
 			row.error.SetText("")
 			if errValue, ok := ui.errors.Load(item.Path); ok {
 				row.error.SetText(errValue.(string))
