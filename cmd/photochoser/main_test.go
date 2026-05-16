@@ -84,6 +84,19 @@ func TestThumbPreloadOrderFallsBackToStart(t *testing.T) {
 	}
 }
 
+func TestThumbPriorityOrderLimitsToVisibleNeighborhood(t *testing.T) {
+	got := thumbPriorityOrder(10, 5, 2)
+	want := []int{5, 6, 4, 7, 3}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d ids, got %d: %#v", len(want), len(got), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("unexpected priority order: got %#v want %#v", got, want)
+		}
+	}
+}
+
 func TestPreferredItemIDKeepsCurrentPath(t *testing.T) {
 	items := []photos.Photo{
 		{Path: "/card/DCIM/a.ARW", Name: "a.ARW"},

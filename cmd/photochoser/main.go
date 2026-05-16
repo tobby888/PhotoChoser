@@ -36,6 +36,8 @@ const (
 	thumbMemoryLimit    = 360
 	thumbWorkerLimit    = 3
 	thumbQueueBuffer    = 2048
+	thumbVisibleRadius  = 14
+	thumbStaleDistance  = 30
 	memoryTrimDelay     = 2 * time.Second
 	autoScanInterval    = 6 * time.Second
 )
@@ -51,8 +53,9 @@ type previewJob struct {
 }
 
 type thumbJob struct {
-	id    int
-	token int64
+	id              int
+	token           int64
+	backgroundToken int64
 }
 
 type photoApp struct {
@@ -87,15 +90,17 @@ type photoApp struct {
 	previewToken atomic.Int64
 	scanToken    atomic.Int64
 
-	thumbPreloadStarted atomic.Bool
-	memoryTrimPending   atomic.Bool
-	scanInProgress      atomic.Bool
-	autoScanStop        chan struct{}
-	autoScanStopOnce    sync.Once
-	thumbHighPriority   chan thumbJob
-	thumbLowPriority    chan thumbJob
-	thumbWorkerStop     chan struct{}
-	thumbWorkerStopOnce sync.Once
+	thumbPreloadStarted  atomic.Bool
+	memoryTrimPending    atomic.Bool
+	scanInProgress       atomic.Bool
+	autoScanStop         chan struct{}
+	autoScanStopOnce     sync.Once
+	thumbHighPriority    chan thumbJob
+	thumbLowPriority     chan thumbJob
+	thumbWorkerStop      chan struct{}
+	thumbWorkerStopOnce  sync.Once
+	thumbFocusID         atomic.Int64
+	thumbBackgroundToken atomic.Int64
 }
 
 type thumbRow struct {
@@ -239,6 +244,7 @@ func main() {
 		thumbLowPriority:  make(chan thumbJob, thumbQueueBuffer),
 		thumbWorkerStop:   make(chan struct{}),
 	}
+	ui.thumbFocusID.Store(-1)
 	ui.build()
 	ui.bindKeys()
 	ui.startAutoScan()
@@ -573,7 +579,21 @@ func (ui *photoApp) setCurrent(id int) {
 }
 
 func (ui *photoApp) loadThumb(id int, token int64) {
-	ui.queueThumb(thumbJob{id: id, token: token}, true)
+	ui.prioritizeVisibleThumbs(id, token)
+}
+
+func (ui *photoApp) prioritizeVisibleThumbs(id int, token int64) {
+	if id < 0 {
+		return
+	}
+	ui.thumbFocusID.Store(int64(id))
+	backgroundToken := ui.thumbBackgroundToken.Add(1)
+
+	total := len(ui.items)
+	for _, thumbID := range thumbPriorityOrder(total, id, thumbVisibleRadius) {
+		ui.queueThumb(thumbJob{id: thumbID, token: token}, true)
+	}
+	ui.queueBackgroundThumbs(total, id, token, backgroundToken)
 }
 
 func (ui *photoApp) queueThumb(job thumbJob, highPriority bool) {
@@ -584,7 +604,7 @@ func (ui *photoApp) queueThumb(job thumbJob, highPriority bool) {
 		select {
 		case ui.thumbHighPriority <- job:
 		default:
-			go ui.loadThumbNow(job.id, job.token)
+			go ui.loadThumbNow(job)
 		}
 		return
 	}
@@ -595,38 +615,74 @@ func (ui *photoApp) queueThumb(job thumbJob, highPriority bool) {
 }
 
 func (ui *photoApp) startThumbWorkers() {
-	for range thumbWorkerLimit {
-		go func() {
-			for {
-				select {
-				case job := <-ui.thumbHighPriority:
-					ui.loadThumbNow(job.id, job.token)
-					continue
-				default:
-				}
-
-				select {
-				case job := <-ui.thumbHighPriority:
-					ui.loadThumbNow(job.id, job.token)
-				case job := <-ui.thumbLowPriority:
-					ui.loadThumbNow(job.id, job.token)
-				case <-ui.thumbWorkerStop:
-					return
-				}
-			}
-		}()
+	highWorkers := max(1, thumbWorkerLimit-1)
+	for range highWorkers {
+		go ui.runHighThumbWorker()
+	}
+	for range max(1, thumbWorkerLimit-highWorkers) {
+		go ui.runMixedThumbWorker()
 	}
 }
 
-func (ui *photoApp) loadThumbNow(id int, token int64) {
-	if ui.scanToken.Load() != token {
+func (ui *photoApp) runHighThumbWorker() {
+	for {
+		select {
+		case job := <-ui.thumbHighPriority:
+			ui.loadThumbNow(job)
+		case <-ui.thumbWorkerStop:
+			return
+		}
+	}
+}
+
+func (ui *photoApp) runMixedThumbWorker() {
+	for {
+		select {
+		case job := <-ui.thumbHighPriority:
+			ui.loadThumbNow(job)
+			continue
+		default:
+		}
+
+		select {
+		case job := <-ui.thumbHighPriority:
+			ui.loadThumbNow(job)
+		case job := <-ui.thumbLowPriority:
+			ui.loadThumbNow(job)
+		case <-ui.thumbWorkerStop:
+			return
+		}
+	}
+}
+
+func (ui *photoApp) queueBackgroundThumbs(total int, center int, scanToken int64, backgroundToken int64) {
+	if total == 0 {
 		return
 	}
+	go func() {
+		for _, id := range thumbPreloadOrder(total, center) {
+			if ui.scanToken.Load() != scanToken || ui.thumbBackgroundToken.Load() != backgroundToken {
+				return
+			}
+			ui.queueThumb(thumbJob{id: id, token: scanToken, backgroundToken: backgroundToken}, false)
+		}
+		if ui.scanToken.Load() == scanToken && ui.thumbBackgroundToken.Load() == backgroundToken {
+			ui.releaseUnusedMemorySoon()
+		}
+	}()
+}
+
+func (ui *photoApp) loadThumbNow(job thumbJob) {
+	if ui.shouldSkipThumbJob(job) {
+		return
+	}
+	id := job.id
+	token := job.token
 	if id < 0 || id >= len(ui.items) {
 		return
 	}
 	item := ui.items[id]
-	if ui.scanToken.Load() != token {
+	if ui.shouldSkipThumbJob(job) {
 		return
 	}
 	if _, ok := ui.thumbs.Load(item.Path); ok {
@@ -654,23 +710,30 @@ func (ui *photoApp) loadThumbNow(id int, token int64) {
 	})
 }
 
+func (ui *photoApp) shouldSkipThumbJob(job thumbJob) bool {
+	if ui.scanToken.Load() != job.token {
+		return true
+	}
+	if job.backgroundToken != 0 && ui.thumbBackgroundToken.Load() != job.backgroundToken {
+		return true
+	}
+	if job.backgroundToken == 0 {
+		focusID := int(ui.thumbFocusID.Load())
+		if focusID >= 0 && abs(job.id-focusID) > thumbStaleDistance {
+			return true
+		}
+	}
+	return false
+}
+
 func (ui *photoApp) preloadThumbs(token int64) {
 	total := len(ui.items)
 	if total == 0 {
 		return
 	}
-	go func() {
-		current := ui.current
-		for _, id := range thumbPreloadOrder(total, current) {
-			if ui.scanToken.Load() != token {
-				return
-			}
-			ui.queueThumb(thumbJob{id: id, token: token}, false)
-		}
-		if ui.scanToken.Load() == token {
-			ui.releaseUnusedMemorySoon()
-		}
-	}()
+	current := ui.current
+	backgroundToken := ui.thumbBackgroundToken.Add(1)
+	ui.queueBackgroundThumbs(total, current, token, backgroundToken)
 }
 
 func (ui *photoApp) preloadThumbsOnce(token int64) {
@@ -994,6 +1057,21 @@ func thumbPreloadOrder(total int, current int) []int {
 	return order
 }
 
+func thumbPriorityOrder(total int, current int, radius int) []int {
+	order := thumbPreloadOrder(total, current)
+	if len(order) == 0 {
+		return nil
+	}
+	limit := radius*2 + 1
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > len(order) {
+		limit = len(order)
+	}
+	return order[:limit]
+}
+
 func preferredItemID(items []photos.Photo, preferredPath string, fallbackID int) int {
 	if preferredPath != "" {
 		for i, item := range items {
@@ -1009,6 +1087,13 @@ func preferredItemID(items []photos.Photo, preferredPath string, fallbackID int)
 		return len(items) - 1
 	}
 	return fallbackID
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
 }
 
 func selectedCount(items []photos.Photo) int {
