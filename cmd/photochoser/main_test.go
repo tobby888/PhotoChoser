@@ -41,16 +41,39 @@ func TestCountNewItems(t *testing.T) {
 	}
 }
 
+func TestSamePhotoPaths(t *testing.T) {
+	items := []photos.Photo{
+		{Path: "/card/DCIM/a.ARW", Name: "a.ARW"},
+		{Path: "/card/DCIM/b.ARW", Name: "b.ARW"},
+	}
+
+	if !samePhotoPaths(items, []photos.Photo{
+		{Path: "/card/DCIM/a.ARW", Name: "a.ARW"},
+		{Path: "/card/DCIM/b.ARW", Name: "b.ARW"},
+	}) {
+		t.Fatal("expected matching paths to be treated as unchanged")
+	}
+	if samePhotoPaths(items, []photos.Photo{
+		{Path: "/card/DCIM/a.ARW", Name: "a.ARW"},
+		{Path: "/card/DCIM/c.ARW", Name: "c.ARW"},
+	}) {
+		t.Fatal("expected changed paths to be detected")
+	}
+}
+
 func TestPreferredItemIDKeepsCurrentPath(t *testing.T) {
 	items := []photos.Photo{
 		{Path: "/card/DCIM/a.ARW", Name: "a.ARW"},
 		{Path: "/card/DCIM/b.ARW", Name: "b.ARW"},
 	}
 
-	if got := preferredItemID(items, "/card/DCIM/b.ARW"); got != 1 {
+	if got := preferredItemID(items, "/card/DCIM/b.ARW", 0); got != 1 {
 		t.Fatalf("expected preferred item id 1, got %d", got)
 	}
-	if got := preferredItemID(items, "/card/DCIM/missing.ARW"); got != 0 {
-		t.Fatalf("expected missing preferred path to fall back to 0, got %d", got)
+	if got := preferredItemID(items, "/card/DCIM/missing.ARW", 1); got != 1 {
+		t.Fatalf("expected missing preferred path to fall back to current index, got %d", got)
+	}
+	if got := preferredItemID(items, "/card/DCIM/missing.ARW", 9); got != 1 {
+		t.Fatalf("expected oversized fallback to clamp to last item, got %d", got)
 	}
 }

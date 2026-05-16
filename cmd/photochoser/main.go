@@ -437,9 +437,16 @@ func (ui *photoApp) scanDirectory(silent bool) {
 			}
 
 			currentPath := ui.currentPath()
+			currentID := ui.current
 			added := countNewItems(items, ui.items)
 			items = mergeScanProgress(items, ui.items)
-			ui.loadItemsKeepingPath(items, currentPath, false)
+			if samePhotoPaths(items, ui.items) {
+				ui.items = items
+				ui.list.Refresh()
+				ui.refreshStatus()
+			} else {
+				ui.loadItemsKeepingPosition(items, currentPath, currentID, false)
+			}
 			if added > 0 {
 				ui.statusLabel.SetText(fmt.Sprintf("已刷新，新增 %d 张，已选 %d 张", added, selectedCount(ui.items)))
 			} else if !silent {
@@ -493,10 +500,10 @@ func (ui *photoApp) importFiles(paths []string) {
 }
 
 func (ui *photoApp) loadItems(items []photos.Photo) {
-	ui.loadItemsKeepingPath(items, "", true)
+	ui.loadItemsKeepingPosition(items, "", 0, true)
 }
 
-func (ui *photoApp) loadItemsKeepingPath(items []photos.Photo, preferredPath string, clearImages bool) {
+func (ui *photoApp) loadItemsKeepingPosition(items []photos.Photo, preferredPath string, fallbackID int, clearImages bool) {
 	ui.items = items
 	ui.current = -1
 	if clearImages {
@@ -509,7 +516,7 @@ func (ui *photoApp) loadItemsKeepingPath(items []photos.Photo, preferredPath str
 	ui.scanToken.Add(1)
 	ui.list.Refresh()
 	if len(items) > 0 {
-		ui.list.Select(preferredItemID(items, preferredPath))
+		ui.list.Select(preferredItemID(items, preferredPath, fallbackID))
 	} else {
 		ui.mainImage.Image = nil
 		ui.mainImage.Refresh()
@@ -911,16 +918,33 @@ func countNewItems(scanned []photos.Photo, existing []photos.Photo) int {
 	return count
 }
 
-func preferredItemID(items []photos.Photo, preferredPath string) int {
-	if preferredPath == "" {
-		return 0
+func samePhotoPaths(a []photos.Photo, b []photos.Photo) bool {
+	if len(a) != len(b) {
+		return false
 	}
-	for i, item := range items {
-		if item.Path == preferredPath {
-			return i
+	for i := range a {
+		if a[i].Path != b[i].Path {
+			return false
 		}
 	}
-	return 0
+	return true
+}
+
+func preferredItemID(items []photos.Photo, preferredPath string, fallbackID int) int {
+	if preferredPath != "" {
+		for i, item := range items {
+			if item.Path == preferredPath {
+				return i
+			}
+		}
+	}
+	if fallbackID < 0 {
+		return 0
+	}
+	if fallbackID >= len(items) {
+		return len(items) - 1
+	}
+	return fallbackID
 }
 
 func selectedCount(items []photos.Photo) int {
