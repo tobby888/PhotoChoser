@@ -35,6 +35,7 @@ const (
 	previewMemoryLimit  = previewPrefetchNext + 3
 	thumbMemoryLimit    = 360
 	thumbWorkerLimit    = 3
+	thumbQueueBuffer    = 2048
 	memoryTrimDelay     = 2 * time.Second
 	autoScanInterval    = 6 * time.Second
 )
@@ -47,6 +48,11 @@ type previewResult struct {
 type previewJob struct {
 	done   chan struct{}
 	result previewResult
+}
+
+type thumbJob struct {
+	id    int
+	token int64
 }
 
 type photoApp struct {
@@ -86,6 +92,10 @@ type photoApp struct {
 	scanInProgress      atomic.Bool
 	autoScanStop        chan struct{}
 	autoScanStopOnce    sync.Once
+	thumbHighPriority   chan thumbJob
+	thumbLowPriority    chan thumbJob
+	thumbWorkerStop     chan struct{}
+	thumbWorkerStopOnce sync.Once
 }
 
 type thumbRow struct {
@@ -217,18 +227,22 @@ func main() {
 	w.Resize(fyne.NewSize(1180, 760))
 
 	ui := &photoApp{
-		window:          w,
-		recursive:       true,
-		current:         -1,
-		transferMode:    photos.TransferMove,
-		previewCacheDir: previewCacheDir,
-		thumbs:          newImageCache(thumbMemoryLimit),
-		previewImages:   newImageCache(previewMemoryLimit),
-		autoScanStop:    make(chan struct{}),
+		window:            w,
+		recursive:         true,
+		current:           -1,
+		transferMode:      photos.TransferMove,
+		previewCacheDir:   previewCacheDir,
+		thumbs:            newImageCache(thumbMemoryLimit),
+		previewImages:     newImageCache(previewMemoryLimit),
+		autoScanStop:      make(chan struct{}),
+		thumbHighPriority: make(chan thumbJob, thumbQueueBuffer),
+		thumbLowPriority:  make(chan thumbJob, thumbQueueBuffer),
+		thumbWorkerStop:   make(chan struct{}),
 	}
 	ui.build()
 	ui.bindKeys()
 	ui.startAutoScan()
+	ui.startThumbWorkers()
 	fyneApp.Lifecycle().SetOnEnteredForeground(func() {
 		ui.restoreKeyboardFocus()
 		ui.scanSilently()
@@ -236,6 +250,9 @@ func main() {
 	fyneApp.Lifecycle().SetOnStopped(func() {
 		ui.autoScanStopOnce.Do(func() {
 			close(ui.autoScanStop)
+		})
+		ui.thumbWorkerStopOnce.Do(func() {
+			close(ui.thumbWorkerStop)
 		})
 	})
 
@@ -556,7 +573,49 @@ func (ui *photoApp) setCurrent(id int) {
 }
 
 func (ui *photoApp) loadThumb(id int, token int64) {
-	go ui.loadThumbNow(id, token)
+	ui.queueThumb(thumbJob{id: id, token: token}, true)
+}
+
+func (ui *photoApp) queueThumb(job thumbJob, highPriority bool) {
+	if job.id < 0 {
+		return
+	}
+	if highPriority {
+		select {
+		case ui.thumbHighPriority <- job:
+		default:
+			go ui.loadThumbNow(job.id, job.token)
+		}
+		return
+	}
+	select {
+	case ui.thumbLowPriority <- job:
+	default:
+	}
+}
+
+func (ui *photoApp) startThumbWorkers() {
+	for range thumbWorkerLimit {
+		go func() {
+			for {
+				select {
+				case job := <-ui.thumbHighPriority:
+					ui.loadThumbNow(job.id, job.token)
+					continue
+				default:
+				}
+
+				select {
+				case job := <-ui.thumbHighPriority:
+					ui.loadThumbNow(job.id, job.token)
+				case job := <-ui.thumbLowPriority:
+					ui.loadThumbNow(job.id, job.token)
+				case <-ui.thumbWorkerStop:
+					return
+				}
+			}
+		}()
+	}
 }
 
 func (ui *photoApp) loadThumbNow(id int, token int64) {
@@ -600,36 +659,14 @@ func (ui *photoApp) preloadThumbs(token int64) {
 	if total == 0 {
 		return
 	}
-	workers := min(total, max(2, runtime.NumCPU()))
-	workers = min(workers, thumbWorkerLimit)
-	jobs := make(chan int, total)
-	var wg sync.WaitGroup
-
-	for range workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for id := range jobs {
-				if ui.scanToken.Load() != token {
-					return
-				}
-				ui.loadThumbNow(id, token)
-			}
-		}()
-	}
-
 	go func() {
-		defer close(jobs)
-		for id := range ui.items {
+		current := ui.current
+		for _, id := range thumbPreloadOrder(total, current) {
 			if ui.scanToken.Load() != token {
 				return
 			}
-			jobs <- id
+			ui.queueThumb(thumbJob{id: id, token: token}, false)
 		}
-	}()
-
-	go func() {
-		wg.Wait()
 		if ui.scanToken.Load() == token {
 			ui.releaseUnusedMemorySoon()
 		}
@@ -932,6 +969,29 @@ func samePhotoPaths(a []photos.Photo, b []photos.Photo) bool {
 		}
 	}
 	return true
+}
+
+func thumbPreloadOrder(total int, current int) []int {
+	if total <= 0 {
+		return nil
+	}
+	if current < 0 || current >= total {
+		current = 0
+	}
+
+	order := make([]int, 0, total)
+	order = append(order, current)
+	for distance := 1; len(order) < total; distance++ {
+		next := current + distance
+		if next < total {
+			order = append(order, next)
+		}
+		previous := current - distance
+		if previous >= 0 {
+			order = append(order, previous)
+		}
+	}
+	return order
 }
 
 func preferredItemID(items []photos.Photo, preferredPath string, fallbackID int) int {

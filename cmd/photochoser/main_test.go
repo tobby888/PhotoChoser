@@ -61,6 +61,29 @@ func TestSamePhotoPaths(t *testing.T) {
 	}
 }
 
+func TestThumbPreloadOrderStartsNearCurrentPhoto(t *testing.T) {
+	got := thumbPreloadOrder(7, 3)
+	want := []int{3, 4, 2, 5, 1, 6, 0}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d ids, got %d: %#v", len(want), len(got), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("unexpected preload order at %d: got %#v want %#v", i, got, want)
+		}
+	}
+}
+
+func TestThumbPreloadOrderFallsBackToStart(t *testing.T) {
+	got := thumbPreloadOrder(3, -1)
+	want := []int{0, 1, 2}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("unexpected preload order: got %#v want %#v", got, want)
+		}
+	}
+}
+
 func TestPreferredItemIDKeepsCurrentPath(t *testing.T) {
 	items := []photos.Photo{
 		{Path: "/card/DCIM/a.ARW", Name: "a.ARW"},
