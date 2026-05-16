@@ -564,22 +564,35 @@ func (ui *photoApp) setCurrent(id int) {
 	}
 
 	token := ui.previewToken.Add(1)
+	scanToken := ui.scanToken.Load()
+	ui.prioritizeCurrentThumb(id, scanToken)
 	if imgValue, ok := ui.previewImages.Load(item.Path); ok {
 		ui.mainImage.Image = imgValue
 		ui.mainImage.Refresh()
 		ui.refreshStatus()
-		ui.preloadNearbyPreviews(id, ui.scanToken.Load(), token)
-		ui.preloadThumbsOnce(ui.scanToken.Load())
+		ui.prioritizeNearbyThumbs(id, scanToken)
+		ui.preloadNearbyPreviews(id, scanToken, token)
+		ui.preloadThumbsOnce(scanToken)
 		return
 	}
 
 	ui.showFastPreviewPlaceholder(item)
 	ui.statusLabel.SetText("正在加载大图...")
-	go ui.loadCurrentPreview(id, item.Path, item.Name, item.Selected, token, ui.scanToken.Load())
+	go ui.loadCurrentPreview(id, item.Path, item.Name, item.Selected, token, scanToken)
+	ui.prioritizeNearbyThumbs(id, scanToken)
 }
 
 func (ui *photoApp) loadThumb(id int, token int64) {
 	ui.prioritizeVisibleThumbs(id, token)
+}
+
+func (ui *photoApp) prioritizeCurrentThumb(id int, token int64) {
+	if id < 0 {
+		return
+	}
+	ui.thumbFocusID.Store(int64(id))
+	ui.thumbBackgroundToken.Add(1)
+	go ui.loadThumbNow(thumbJob{id: id, token: token})
 }
 
 func (ui *photoApp) prioritizeVisibleThumbs(id int, token int64) {
@@ -594,6 +607,19 @@ func (ui *photoApp) prioritizeVisibleThumbs(id int, token int64) {
 		ui.queueThumb(thumbJob{id: thumbID, token: token}, true)
 	}
 	ui.queueBackgroundThumbs(total, id, token, backgroundToken)
+}
+
+func (ui *photoApp) prioritizeNearbyThumbs(id int, token int64) {
+	if id < 0 {
+		return
+	}
+	total := len(ui.items)
+	for _, thumbID := range thumbPriorityOrder(total, id, thumbVisibleRadius) {
+		if thumbID == id {
+			continue
+		}
+		ui.queueThumb(thumbJob{id: thumbID, token: token}, true)
+	}
 }
 
 func (ui *photoApp) queueThumb(job thumbJob, highPriority bool) {
