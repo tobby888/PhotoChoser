@@ -516,7 +516,11 @@ func (ui *photoApp) loadItemsKeepingPosition(items []photos.Photo, preferredPath
 	ui.scanToken.Add(1)
 	ui.list.Refresh()
 	if len(items) > 0 {
-		ui.list.Select(preferredItemID(items, preferredPath, fallbackID))
+		id := preferredItemID(items, preferredPath, fallbackID)
+		ui.list.Select(id)
+		if ui.current != id {
+			ui.setCurrent(id)
+		}
 	} else {
 		ui.mainImage.Image = nil
 		ui.mainImage.Refresh()
