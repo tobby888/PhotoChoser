@@ -405,6 +405,10 @@ func (ui *photoApp) handleKey(event *fyne.KeyEvent) {
 	switch event.Name {
 	case fyne.KeyRight:
 		ui.goTo(ui.current + 1)
+	case fyne.KeyDown:
+		ui.goTo(ui.current + 1)
+	case fyne.KeyUp:
+		ui.goTo(ui.current - 1)
 	case fyne.KeyLeft:
 		ui.goTo(ui.current - 1)
 	case fyne.KeySpace:
