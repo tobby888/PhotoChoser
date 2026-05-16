@@ -40,6 +40,7 @@ const (
 	thumbQueueBuffer    = 2048
 	thumbVisibleRadius  = 14
 	thumbStaleDistance  = 30
+	backgroundLoadLimit = 1
 	memoryTrimDelay     = 2 * time.Second
 	autoScanInterval    = 6 * time.Second
 )
@@ -103,7 +104,7 @@ type photoApp struct {
 	thumbWorkerStopOnce  sync.Once
 	thumbFocusID         atomic.Int64
 	thumbBackgroundToken atomic.Int64
-	thumbLoadGate        sync.RWMutex
+	backgroundLoadSlots  chan struct{}
 }
 
 type thumbRow struct {
@@ -235,17 +236,18 @@ func main() {
 	w.Resize(fyne.NewSize(1180, 760))
 
 	ui := &photoApp{
-		window:            w,
-		recursive:         true,
-		current:           -1,
-		transferMode:      photos.TransferMove,
-		previewCacheDir:   previewCacheDir,
-		thumbs:            newImageCache(thumbMemoryLimit),
-		previewImages:     newImageCache(previewMemoryLimit),
-		autoScanStop:      make(chan struct{}),
-		thumbHighPriority: make(chan thumbJob, thumbQueueBuffer),
-		thumbLowPriority:  make(chan thumbJob, thumbQueueBuffer),
-		thumbWorkerStop:   make(chan struct{}),
+		window:              w,
+		recursive:           true,
+		current:             -1,
+		transferMode:        photos.TransferMove,
+		previewCacheDir:     previewCacheDir,
+		thumbs:              newImageCache(thumbMemoryLimit),
+		previewImages:       newImageCache(previewMemoryLimit),
+		autoScanStop:        make(chan struct{}),
+		thumbHighPriority:   make(chan thumbJob, thumbQueueBuffer),
+		thumbLowPriority:    make(chan thumbJob, thumbQueueBuffer),
+		thumbWorkerStop:     make(chan struct{}),
+		backgroundLoadSlots: make(chan struct{}, backgroundLoadLimit),
 	}
 	ui.thumbFocusID.Store(-1)
 	ui.build()
@@ -567,7 +569,7 @@ func (ui *photoApp) setCurrent(id int) {
 
 	token := ui.previewToken.Add(1)
 	scanToken := ui.scanToken.Load()
-	ui.prioritizeCurrentThumb(id, scanToken)
+	ui.beginSelectedAssetLoad(id, token, scanToken)
 	if imgValue, ok := ui.previewImages.Load(item.Path); ok {
 		ui.currentPreviewToken.Store(0)
 		ui.mainImage.Image = imgValue
@@ -582,7 +584,7 @@ func (ui *photoApp) setCurrent(id int) {
 
 	ui.showFastPreviewPlaceholder(item)
 	ui.statusLabel.SetText("正在加载大图...")
-	ui.currentPreviewToken.Store(token)
+	go ui.loadSelectedThumb(id, item.Path, token, scanToken)
 	go ui.loadCurrentPreview(id, item.Path, item.Name, item.Selected, token, scanToken)
 }
 
@@ -590,12 +592,13 @@ func (ui *photoApp) loadThumb(id int, token int64) {
 	ui.prioritizeVisibleThumbs(id, token)
 }
 
-func (ui *photoApp) prioritizeCurrentThumb(id int, token int64) {
+func (ui *photoApp) beginSelectedAssetLoad(id int, previewToken int64, scanToken int64) {
 	if id < 0 {
 		return
 	}
 	ui.thumbFocusID.Store(int64(id))
 	ui.thumbBackgroundToken.Add(1)
+	ui.currentPreviewToken.Store(previewToken)
 }
 
 func (ui *photoApp) prioritizeVisibleThumbs(id int, token int64) {
@@ -633,7 +636,6 @@ func (ui *photoApp) queueThumb(job thumbJob, highPriority bool) {
 		select {
 		case ui.thumbHighPriority <- job:
 		default:
-			go ui.loadThumbNow(job)
 		}
 		return
 	}
@@ -720,14 +722,16 @@ func (ui *photoApp) loadThumbNow(job thumbJob) {
 	if _, loaded := ui.loading.LoadOrStore(item.Path, struct{}{}); loaded {
 		return
 	}
-	ui.thumbLoadGate.RLock()
 	if ui.shouldSkipThumbJob(job) {
-		ui.thumbLoadGate.RUnlock()
+		ui.loading.Delete(item.Path)
+		return
+	}
+	if !ui.acquireBackgroundLoad(job.token, job.backgroundToken, job.id) {
 		ui.loading.Delete(item.Path)
 		return
 	}
 	img, err := ui.loadThumbImage(item.Path)
-	ui.thumbLoadGate.RUnlock()
+	ui.releaseBackgroundLoad()
 	fyne.Do(func() {
 		ui.loading.Delete(item.Path)
 		if ui.scanToken.Load() != token {
@@ -765,6 +769,40 @@ func (ui *photoApp) shouldSkipThumbJob(job thumbJob) bool {
 	return false
 }
 
+func (ui *photoApp) acquireBackgroundLoad(scanToken int64, backgroundToken int64, id int) bool {
+	if ui.scanToken.Load() != scanToken || ui.currentPreviewToken.Load() != 0 {
+		return false
+	}
+	if backgroundToken != 0 && ui.thumbBackgroundToken.Load() != backgroundToken {
+		return false
+	}
+	if ui.backgroundLoadSlots == nil {
+		return true
+	}
+	ui.backgroundLoadSlots <- struct{}{}
+	if ui.scanToken.Load() != scanToken || ui.currentPreviewToken.Load() != 0 {
+		ui.releaseBackgroundLoad()
+		return false
+	}
+	if backgroundToken != 0 && ui.thumbBackgroundToken.Load() != backgroundToken {
+		ui.releaseBackgroundLoad()
+		return false
+	}
+	focusID := int(ui.thumbFocusID.Load())
+	if backgroundToken == 0 && focusID >= 0 && abs(id-focusID) > thumbStaleDistance {
+		ui.releaseBackgroundLoad()
+		return false
+	}
+	return true
+}
+
+func (ui *photoApp) releaseBackgroundLoad() {
+	if ui.backgroundLoadSlots == nil {
+		return
+	}
+	<-ui.backgroundLoadSlots
+}
+
 func (ui *photoApp) preloadThumbs(token int64) {
 	total := len(ui.items)
 	if total == 0 {
@@ -777,6 +815,31 @@ func (ui *photoApp) preloadThumbs(token int64) {
 
 func (ui *photoApp) loadThumbImage(path string) (image.Image, error) {
 	return preview.LoadCachedScaled(path, thumbMaxSide, ui.previewCacheDir)
+}
+
+func (ui *photoApp) loadSelectedThumb(id int, path string, previewToken int64, scanToken int64) {
+	if ui.previewToken.Load() != previewToken || ui.scanToken.Load() != scanToken {
+		return
+	}
+	if _, ok := ui.thumbs.Load(path); ok {
+		return
+	}
+	img, err := ui.loadThumbImage(path)
+	fyne.Do(func() {
+		if ui.previewToken.Load() != previewToken || ui.scanToken.Load() != scanToken {
+			return
+		}
+		if err != nil {
+			ui.errors.Store(path, err.Error())
+			return
+		}
+		if ui.thumbs.Store(path, img) {
+			ui.releaseUnusedMemorySoon()
+		}
+		if id >= 0 && id < len(ui.items) && ui.items[id].Path == path {
+			ui.list.RefreshItem(id)
+		}
+	})
 }
 
 func (ui *photoApp) storeThumbFromPreview(id int, path string, img image.Image, scanToken int64) {
@@ -840,8 +903,6 @@ func (ui *photoApp) loadCurrentPreview(id int, path string, name string, selecte
 }
 
 func (ui *photoApp) loadSelectedPreviewExclusive(path string, token int64, scanToken int64) (image.Image, error) {
-	ui.thumbLoadGate.Lock()
-	defer ui.thumbLoadGate.Unlock()
 	if ui.previewToken.Load() != token || ui.scanToken.Load() != scanToken {
 		return nil, errStalePreview
 	}
@@ -884,11 +945,13 @@ func (ui *photoApp) preloadPreview(id int, scanToken int64, previewToken int64) 
 }
 
 func (ui *photoApp) loadBackgroundPreviewShared(path string, scanToken int64, previewToken int64) (image.Image, error) {
-	ui.thumbLoadGate.RLock()
-	defer ui.thumbLoadGate.RUnlock()
 	if ui.scanToken.Load() != scanToken || ui.previewToken.Load() != previewToken || ui.currentPreviewToken.Load() != 0 {
 		return nil, errStalePreview
 	}
+	if !ui.acquireBackgroundLoad(scanToken, ui.thumbBackgroundToken.Load(), ui.current) {
+		return nil, errStalePreview
+	}
+	defer ui.releaseBackgroundLoad()
 	return ui.loadPreviewImageShared(path)
 }
 

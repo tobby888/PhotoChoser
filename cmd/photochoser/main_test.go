@@ -112,34 +112,22 @@ func TestShouldSkipThumbJobWhileCurrentPreviewLoads(t *testing.T) {
 	}
 }
 
-func TestThumbLoadGateBlocksThumbnailsForSelectedPreview(t *testing.T) {
-	ui := &photoApp{}
-	locked := make(chan struct{})
-	release := make(chan struct{})
-	done := make(chan struct{})
+func TestAcquireBackgroundLoadStopsWhileSelectedPreviewLoads(t *testing.T) {
+	ui := &photoApp{
+		backgroundLoadSlots: make(chan struct{}, 1),
+	}
+	ui.scanToken.Store(12)
+	ui.currentPreviewToken.Store(3)
 
-	go func() {
-		ui.thumbLoadGate.Lock()
-		close(locked)
-		<-release
-		ui.thumbLoadGate.Unlock()
-	}()
-	<-locked
-
-	go func() {
-		ui.thumbLoadGate.RLock()
-		ui.thumbLoadGate.RUnlock()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		t.Fatal("expected selected preview lock to block thumbnail loading")
-	default:
+	if ui.acquireBackgroundLoad(12, 0, 3) {
+		t.Fatal("expected background image work to stop while selected preview is loading")
 	}
 
-	close(release)
-	<-done
+	ui.currentPreviewToken.Store(0)
+	if !ui.acquireBackgroundLoad(12, 0, 3) {
+		t.Fatal("expected background image work to resume after selected preview finishes")
+	}
+	ui.releaseBackgroundLoad()
 }
 
 func TestPreferredItemIDKeepsCurrentPath(t *testing.T) {
