@@ -47,9 +47,16 @@ PhotoChoser is a Go desktop app for event photographers who need fast same-day p
 - Run the app: `make run`
 - Run tests: `make test`
 - Build local binary: `make build`
+- Build macOS app bundle and DMG: `make package-macos`
 - Check Windows-only packages from macOS: `make check-windows`
 
 The Makefile keeps Go caches inside `.cache/` so Codex sandboxed runs do not write to the user-level Go cache.
+
+## macOS Packaging
+
+- Use `make package-macos` on macOS to create both `dist/macos/PhotoChoser.app` and `dist/PhotoChoser-macos.dmg`.
+- The packaging script is `scripts/package_macos.sh`; it does not require Fyne CLI.
+- The app bundle is ad-hoc signed for local testing, but it is not notarized for public distribution.
 
 ## Known Context
 

@@ -102,6 +102,7 @@ RAW 文件会优先读取相机写入文件里的内嵌 JPEG 预览，这比完�
 make test
 make build
 make check-windows
+make package-macos
 ```
 
 `Makefile` 会把 Go 缓存放到项目内的 `.cache/` 目录，便于在沙盒或 CI 环境中运行。
@@ -116,10 +117,21 @@ make build
 
 ## 打包
 
-安装 Fyne CLI 后可以分别在 macOS 和 Windows 上打包：
+macOS 上可以直接生成可运行的 `.app` 和可分发的 `.dmg`：
 
 ```bash
-go install fyne.io/tools/cmd/fyne@latest
-fyne package -os darwin -icon Icon.png
-fyne package -os windows -icon Icon.png
+make package-macos
+```
+
+构建产物会输出到：
+
+- `dist/macos/PhotoChoser.app`
+- `dist/PhotoChoser-macos.dmg`
+
+`PhotoChoser.app` 可以直接双击运行；`PhotoChoser-macos.dmg` 打开后可将 PhotoChoser 拖入 Applications。脚本使用系统自带的 `hdiutil` 制作 DMG，并对 app bundle 做 ad-hoc 签名，方便本机运行和测试。
+
+如需覆盖 app 版本号，可在打包时传入 `APP_VERSION` 和 `BUILD_VERSION`：
+
+```bash
+APP_VERSION=1.0.0 BUILD_VERSION=100 make package-macos
 ```
