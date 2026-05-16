@@ -97,6 +97,21 @@ func TestThumbPriorityOrderLimitsToVisibleNeighborhood(t *testing.T) {
 	}
 }
 
+func TestShouldSkipThumbJobWhileCurrentPreviewLoads(t *testing.T) {
+	ui := &photoApp{}
+	ui.scanToken.Store(12)
+	ui.currentPreviewToken.Store(3)
+
+	if !ui.shouldSkipThumbJob(thumbJob{id: 3, token: 12}) {
+		t.Fatal("expected thumbnail work to pause while current preview is loading")
+	}
+
+	ui.currentPreviewToken.Store(0)
+	if ui.shouldSkipThumbJob(thumbJob{id: 3, token: 12}) {
+		t.Fatal("expected thumbnail work to resume after current preview finishes")
+	}
+}
+
 func TestPreferredItemIDKeepsCurrentPath(t *testing.T) {
 	items := []photos.Photo{
 		{Path: "/card/DCIM/a.ARW", Name: "a.ARW"},

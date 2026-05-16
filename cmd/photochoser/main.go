@@ -29,7 +29,6 @@ import (
 const (
 	thumbMaxSide        = 220
 	previewMaxSide      = 1280
-	previewLoadWait     = 45 * time.Millisecond
 	previewPrefetchNext = 3
 	previewPrefetchWait = 140 * time.Millisecond
 	previewMemoryLimit  = previewPrefetchNext + 3
@@ -87,10 +86,10 @@ type photoApp struct {
 	titleLabel  *widget.Label
 	moveButton  *widget.Button
 
-	previewToken atomic.Int64
-	scanToken    atomic.Int64
+	previewToken        atomic.Int64
+	scanToken           atomic.Int64
+	currentPreviewToken atomic.Int64
 
-	thumbPreloadStarted  atomic.Bool
 	memoryTrimPending    atomic.Bool
 	scanInProgress       atomic.Bool
 	autoScanStop         chan struct{}
@@ -535,7 +534,6 @@ func (ui *photoApp) loadItemsKeepingPosition(items []photos.Photo, preferredPath
 	ui.errors = sync.Map{}
 	ui.loading = sync.Map{}
 	ui.previewLoading = sync.Map{}
-	ui.thumbPreloadStarted.Store(false)
 	ui.scanToken.Add(1)
 	ui.list.Refresh()
 	if len(items) > 0 {
@@ -567,19 +565,21 @@ func (ui *photoApp) setCurrent(id int) {
 	scanToken := ui.scanToken.Load()
 	ui.prioritizeCurrentThumb(id, scanToken)
 	if imgValue, ok := ui.previewImages.Load(item.Path); ok {
+		ui.currentPreviewToken.Store(0)
 		ui.mainImage.Image = imgValue
 		ui.mainImage.Refresh()
+		ui.storeThumbFromPreview(id, item.Path, imgValue, scanToken)
 		ui.refreshStatus()
 		ui.prioritizeNearbyThumbs(id, scanToken)
 		ui.preloadNearbyPreviews(id, scanToken, token)
-		ui.preloadThumbsOnce(scanToken)
+		ui.preloadThumbs(scanToken)
 		return
 	}
 
 	ui.showFastPreviewPlaceholder(item)
 	ui.statusLabel.SetText("正在加载大图...")
+	ui.currentPreviewToken.Store(token)
 	go ui.loadCurrentPreview(id, item.Path, item.Name, item.Selected, token, scanToken)
-	ui.prioritizeNearbyThumbs(id, scanToken)
 }
 
 func (ui *photoApp) loadThumb(id int, token int64) {
@@ -592,7 +592,6 @@ func (ui *photoApp) prioritizeCurrentThumb(id int, token int64) {
 	}
 	ui.thumbFocusID.Store(int64(id))
 	ui.thumbBackgroundToken.Add(1)
-	go ui.loadThumbNow(thumbJob{id: id, token: token})
 }
 
 func (ui *photoApp) prioritizeVisibleThumbs(id int, token int64) {
@@ -740,6 +739,9 @@ func (ui *photoApp) shouldSkipThumbJob(job thumbJob) bool {
 	if ui.scanToken.Load() != job.token {
 		return true
 	}
+	if ui.currentPreviewToken.Load() != 0 {
+		return true
+	}
 	if job.backgroundToken != 0 && ui.thumbBackgroundToken.Load() != job.backgroundToken {
 		return true
 	}
@@ -762,14 +764,24 @@ func (ui *photoApp) preloadThumbs(token int64) {
 	ui.queueBackgroundThumbs(total, current, token, backgroundToken)
 }
 
-func (ui *photoApp) preloadThumbsOnce(token int64) {
-	if ui.thumbPreloadStarted.CompareAndSwap(false, true) {
-		ui.preloadThumbs(token)
-	}
-}
-
 func (ui *photoApp) loadThumbImage(path string) (image.Image, error) {
 	return preview.LoadCachedScaled(path, thumbMaxSide, ui.previewCacheDir)
+}
+
+func (ui *photoApp) storeThumbFromPreview(id int, path string, img image.Image, scanToken int64) {
+	if ui.scanToken.Load() != scanToken {
+		return
+	}
+	if _, ok := ui.thumbs.Load(path); ok {
+		return
+	}
+	thumb := preview.Scale(img, thumbMaxSide)
+	if ui.thumbs.Store(path, thumb) {
+		ui.releaseUnusedMemorySoon()
+	}
+	if id >= 0 && id < len(ui.items) && ui.items[id].Path == path {
+		ui.list.RefreshItem(id)
+	}
 }
 
 func (ui *photoApp) showFastPreviewPlaceholder(item photos.Photo) {
@@ -783,17 +795,19 @@ func (ui *photoApp) showFastPreviewPlaceholder(item photos.Photo) {
 }
 
 func (ui *photoApp) loadCurrentPreview(id int, path string, name string, selected bool, token int64, scanToken int64) {
-	time.Sleep(previewLoadWait)
 	if ui.previewToken.Load() != token || ui.scanToken.Load() != scanToken {
+		ui.currentPreviewToken.CompareAndSwap(token, 0)
 		return
 	}
 
 	img, err := ui.loadPreviewImageShared(path)
 	fyne.Do(func() {
 		if ui.previewToken.Load() != token || ui.scanToken.Load() != scanToken {
+			ui.currentPreviewToken.CompareAndSwap(token, 0)
 			return
 		}
 		if err != nil {
+			ui.currentPreviewToken.CompareAndSwap(token, 0)
 			ui.mainImage.Image = nil
 			ui.mainImage.Refresh()
 			ui.statusLabel.SetText("无法预览：" + err.Error())
@@ -802,12 +816,15 @@ func (ui *photoApp) loadCurrentPreview(id int, path string, name string, selecte
 		if ui.previewImages.Store(path, img) {
 			ui.releaseUnusedMemorySoon()
 		}
+		ui.storeThumbFromPreview(id, path, img, scanToken)
 		ui.mainImage.Image = img
 		ui.mainImage.Refresh()
 		ui.titleLabel.SetText(selectionMark(selected) + name)
 		ui.refreshStatus()
+		ui.currentPreviewToken.CompareAndSwap(token, 0)
+		ui.prioritizeNearbyThumbs(id, scanToken)
 		ui.preloadNearbyPreviews(id, scanToken, token)
-		ui.preloadThumbsOnce(scanToken)
+		ui.preloadThumbs(scanToken)
 	})
 }
 
