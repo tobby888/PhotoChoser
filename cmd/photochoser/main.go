@@ -36,6 +36,7 @@ const (
 	thumbMemoryLimit    = 360
 	thumbWorkerLimit    = 3
 	memoryTrimDelay     = 2 * time.Second
+	autoScanInterval    = 6 * time.Second
 )
 
 type previewResult struct {
@@ -82,6 +83,9 @@ type photoApp struct {
 
 	thumbPreloadStarted atomic.Bool
 	memoryTrimPending   atomic.Bool
+	scanInProgress      atomic.Bool
+	autoScanStop        chan struct{}
+	autoScanStopOnce    sync.Once
 }
 
 type thumbRow struct {
@@ -220,11 +224,19 @@ func main() {
 		previewCacheDir: previewCacheDir,
 		thumbs:          newImageCache(thumbMemoryLimit),
 		previewImages:   newImageCache(previewMemoryLimit),
+		autoScanStop:    make(chan struct{}),
 	}
 	ui.build()
 	ui.bindKeys()
+	ui.startAutoScan()
 	fyneApp.Lifecycle().SetOnEnteredForeground(func() {
 		ui.restoreKeyboardFocus()
+		ui.scanSilently()
+	})
+	fyneApp.Lifecycle().SetOnStopped(func() {
+		ui.autoScanStopOnce.Do(func() {
+			close(ui.autoScanStop)
+		})
 	})
 
 	w.ShowAndRun()
@@ -260,6 +272,7 @@ func (ui *photoApp) build() {
 			ui.loadSourceFolder(path)
 		})
 	})
+	refreshButton := widget.NewButtonWithIcon("刷新", theme.ViewRefreshIcon(), ui.scan)
 	targetButton := widget.NewButtonWithIcon("目标目录", theme.FolderIcon(), func() {
 		ui.openFolder("选择目标目录", ui.targetDir, func(path string) {
 			ui.targetDir = path
@@ -312,7 +325,7 @@ func (ui *photoApp) build() {
 	}
 
 	top := container.NewVBox(
-		container.NewHBox(importButton, sourceButton, ui.sourceLabel, recursiveCheck),
+		container.NewHBox(importButton, sourceButton, refreshButton, ui.sourceLabel, recursiveCheck),
 		container.NewHBox(targetButton, ui.targetLabel, actionChoice, ui.moveButton),
 	)
 	sidebar := container.NewBorder(ui.countLabel, nil, nil, nil, ui.list)
@@ -383,12 +396,79 @@ func (ui *photoApp) restoreKeyboardFocus() {
 }
 
 func (ui *photoApp) scan() {
-	items, err := photos.Scan(ui.sourceDir, ui.recursive)
-	if err != nil {
-		ui.statusLabel.SetText(err.Error())
+	ui.scanDirectory(false)
+}
+
+func (ui *photoApp) scanSilently() {
+	ui.scanDirectory(true)
+}
+
+func (ui *photoApp) scanDirectory(silent bool) {
+	if ui.sourceDir == "" {
 		return
 	}
-	ui.loadItems(items)
+	if !ui.scanInProgress.CompareAndSwap(false, true) {
+		if !silent {
+			ui.statusLabel.SetText("正在扫描照片...")
+		}
+		return
+	}
+
+	sourceDir := ui.sourceDir
+	recursive := ui.recursive
+	if !silent {
+		ui.statusLabel.SetText("正在扫描照片...")
+	}
+
+	go func() {
+		items, err := photos.Scan(sourceDir, recursive)
+		fyne.Do(func() {
+			defer ui.scanInProgress.Store(false)
+			if sourceDir != ui.sourceDir || recursive != ui.recursive {
+				return
+			}
+			if err != nil {
+				if silent {
+					ui.statusLabel.SetText("照片目录暂不可用，重新插入存储卡后会自动刷新")
+				} else {
+					ui.statusLabel.SetText(err.Error())
+				}
+				return
+			}
+
+			currentPath := ui.currentPath()
+			added := countNewItems(items, ui.items)
+			items = mergeScanProgress(items, ui.items)
+			ui.loadItemsKeepingPath(items, currentPath, false)
+			if added > 0 {
+				ui.statusLabel.SetText(fmt.Sprintf("已刷新，新增 %d 张，已选 %d 张", added, selectedCount(ui.items)))
+			} else if !silent {
+				ui.statusLabel.SetText(fmt.Sprintf("已刷新，%d 张 / 已选 %d 张", len(ui.items), selectedCount(ui.items)))
+			}
+		})
+	}()
+}
+
+func (ui *photoApp) startAutoScan() {
+	ticker := time.NewTicker(autoScanInterval)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				fyne.Do(ui.scanSilently)
+			case <-ui.autoScanStop:
+				return
+			}
+		}
+	}()
+}
+
+func (ui *photoApp) currentPath() string {
+	if ui.current < 0 || ui.current >= len(ui.items) {
+		return ""
+	}
+	return ui.items[ui.current].Path
 }
 
 func (ui *photoApp) loadSourceFolder(path string) {
@@ -413,9 +493,15 @@ func (ui *photoApp) importFiles(paths []string) {
 }
 
 func (ui *photoApp) loadItems(items []photos.Photo) {
+	ui.loadItemsKeepingPath(items, "", true)
+}
+
+func (ui *photoApp) loadItemsKeepingPath(items []photos.Photo, preferredPath string, clearImages bool) {
 	ui.items = items
 	ui.current = -1
-	ui.clearImageCaches()
+	if clearImages {
+		ui.clearImageCaches()
+	}
 	ui.errors = sync.Map{}
 	ui.loading = sync.Map{}
 	ui.previewLoading = sync.Map{}
@@ -423,7 +509,7 @@ func (ui *photoApp) loadItems(items []photos.Photo) {
 	ui.scanToken.Add(1)
 	ui.list.Refresh()
 	if len(items) > 0 {
-		ui.list.Select(0)
+		ui.list.Select(preferredItemID(items, preferredPath))
 	} else {
 		ui.mainImage.Image = nil
 		ui.mainImage.Refresh()
@@ -794,6 +880,47 @@ func pathSet(paths []string) map[string]struct{} {
 		set[path] = struct{}{}
 	}
 	return set
+}
+
+func mergeScanProgress(scanned []photos.Photo, existing []photos.Photo) []photos.Photo {
+	selected := make(map[string]bool, len(existing))
+	for _, item := range existing {
+		if item.Selected {
+			selected[item.Path] = true
+		}
+	}
+	for i := range scanned {
+		if selected[scanned[i].Path] {
+			scanned[i].Selected = true
+		}
+	}
+	return scanned
+}
+
+func countNewItems(scanned []photos.Photo, existing []photos.Photo) int {
+	known := make(map[string]struct{}, len(existing))
+	for _, item := range existing {
+		known[item.Path] = struct{}{}
+	}
+	count := 0
+	for _, item := range scanned {
+		if _, ok := known[item.Path]; !ok {
+			count++
+		}
+	}
+	return count
+}
+
+func preferredItemID(items []photos.Photo, preferredPath string) int {
+	if preferredPath == "" {
+		return 0
+	}
+	for i, item := range items {
+		if item.Path == preferredPath {
+			return i
+		}
+	}
+	return 0
 }
 
 func selectedCount(items []photos.Photo) int {

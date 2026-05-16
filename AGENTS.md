@@ -12,6 +12,7 @@ PhotoChoser is a Go desktop app for event photographers who need fast same-day p
 - Support fast viewing of many event photos from camera cards and local folders.
 - Support system-native folder selection so the user imports a whole photo folder, not individual photo files.
 - Keep directory scanning available, including recursive scanning.
+- Preserve current selections when rescanning the same source folder, and refresh automatically when a temporarily removed camera card or source folder becomes available again.
 - Use system-native folder selection for choosing scan folders and target folders; do not use Fyne's internal folder picker for this.
 - Show a thumbnail list and a large preview for the current photo.
 - Generate thumbnails concurrently with Go goroutines for fast browsing; cache and prefetch large previews to keep keyboard navigation responsive. Session preview caches are allowed, but all cache files must be cleared when the app exits.
