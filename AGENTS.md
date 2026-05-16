@@ -7,6 +7,7 @@ PhotoChoser is a Go desktop app for event photographers who need fast same-day p
 ## User Requirements
 
 - Build with Go and keep the project cross-platform for macOS and Windows.
+- Windows GUI builds must use the Windows GUI subsystem so launching the `.exe` does not show a console window.
 - Keep the project in git and commit completed changes.
 - The first-screen experience must be the usable photo selection app, not a landing page or demo shell.
 - Support fast viewing of many event photos from camera cards and local folders.
@@ -42,6 +43,7 @@ PhotoChoser is a Go desktop app for event photographers who need fast same-day p
 - Native file/folder picker wrappers: `internal/nativepicker`
 - Cross-platform build check: `.github/workflows/build.yml`
 - Project quick commands: `Makefile`
+- Windows GUI build helper: `scripts/build-windows.ps1`
 
 ## Quick Run
 
@@ -49,6 +51,7 @@ PhotoChoser is a Go desktop app for event photographers who need fast same-day p
 - Run tests: `make test`
 - Build local binary: `make build`
 - Build macOS app bundle and DMG: `make package-macos`
+- Build Windows GUI binary without a console window: `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1`
 - Check Windows-only packages from macOS: `make check-windows`
 
 The Makefile keeps Go caches inside `.cache/` so Codex sandboxed runs do not write to the user-level Go cache.
@@ -82,6 +85,7 @@ Run these before handing off meaningful code changes:
 ```bash
 make test
 make build
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
 make check-windows
 ```
 

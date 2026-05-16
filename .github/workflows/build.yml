@@ -23,5 +23,11 @@ jobs:
       - name: Test
         run: go test ./...
       - name: Build
-        run: go build ./cmd/photochoser
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-windows.ps1
+          else
+            go build ./cmd/photochoser
+          fi
 
