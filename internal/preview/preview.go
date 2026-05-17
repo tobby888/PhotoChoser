@@ -87,14 +87,14 @@ func Load(path string) (image.Image, error) {
 		}
 	}
 
-	img, nativeErr := loadNativePreview(path)
-	if nativeErr == nil {
+	img, fallbackErr := loadRAWFallback(path)
+	if fallbackErr == nil {
 		return img, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	return nil, nativeErr
+	return nil, fallbackErr
 }
 
 func Scale(src image.Image, maxSide int) image.Image {

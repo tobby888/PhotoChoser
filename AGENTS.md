@@ -30,10 +30,10 @@ PhotoChoser is a Go desktop app for event photographers who need fast same-day p
 ## RAW Preview Strategy
 
 - For speed, prefer reading embedded JPEG previews from RAW files.
-- If no embedded JPEG preview is found, use the OS-native RAW preview fallback.
-- On macOS, the current fallback uses `sips` to convert RAW to a temporary JPEG.
-- On Windows, the current fallback uses PowerShell/WIC to decode RAW when the system has the right codec support.
-- Do not replace fast preview loading with full RAW demosaic processing unless the user explicitly asks; culling speed matters more than final RAW development accuracy.
+- If no embedded JPEG preview is found, Windows release builds must use the embedded LibRaw CGO fallback, statically linked into the single GUI `.exe`.
+- Windows release builds must package only one GUI `.exe` app and must not depend on PowerShell/WIC RAW codecs, external DLLs, helper executables, or user-installed RAW format support.
+- Development builds without the `libraw` build tag may still use the OS-native fallback path for local convenience.
+- Do not replace fast embedded preview loading with full RAW demosaic processing unless the embedded preview path fails; culling speed matters more than final RAW development accuracy.
 
 ## Current Architecture
 
@@ -53,8 +53,8 @@ PhotoChoser is a Go desktop app for event photographers who need fast same-day p
 - Run tests: `make test`
 - Build local binary: `make build`
 - Build macOS app bundle and DMG: `make package-macos`
-- Build Windows GUI binary without a console window: `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1`
-- Build Windows release zip: `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\package_windows.ps1`
+- Build Windows GUI binary without a console window: set `LIBRAW_DIR` to a static LibRaw install root, then run `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1`
+- Build Windows release zip: set `LIBRAW_DIR` to a static LibRaw install root, then run `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\package_windows.ps1`
 - Check Windows-only packages from macOS: `make check-windows`
 
 The Makefile keeps Go caches inside `.cache/` so Codex sandboxed runs do not write to the user-level Go cache.
@@ -78,7 +78,7 @@ The Makefile keeps Go caches inside `.cache/` so Codex sandboxed runs do not wri
 - Prefer focused bug fixes over broad rewrites.
 - Preserve the existing Fyne UI unless a bug or user request requires changing it.
 - Keep user-facing text concise and suitable for a fast photography workflow.
-- Avoid adding heavyweight RAW dependencies unless necessary; prefer native OS support and embedded previews first.
+- Keep embedded JPEG preview loading as the fast path; use the embedded LibRaw fallback for RAW files without usable embedded previews.
 - Keep generated binaries and caches out of git.
 - Update README and AGENTS.md when workflow or requirements change.
 
@@ -89,8 +89,8 @@ Run these before handing off meaningful code changes:
 ```bash
 make test
 make build
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\package_windows.ps1
+LIBRAW_DIR=<static LibRaw install root> powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
+LIBRAW_DIR=<static LibRaw install root> powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\package_windows.ps1
 make check-windows
 ```
 

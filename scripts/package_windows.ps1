@@ -17,6 +17,24 @@ $env:GOMODCACHE = if ($env:GOMODCACHE) { $env:GOMODCACHE } else { Join-Path $roo
 $env:GOPATH = if ($env:GOPATH) { $env:GOPATH } else { Join-Path $root ".cache\go" }
 $env:GOOS = "windows"
 $env:GOARCH = $arch
+$env:CGO_ENABLED = "1"
+
+if (-not $env:LIBRAW_DIR -and (-not $env:CGO_CFLAGS -or -not $env:CGO_LDFLAGS)) {
+    throw "Set LIBRAW_DIR to a static LibRaw install root, or set CGO_CFLAGS and CGO_LDFLAGS. Windows release packages use embedded LibRaw and produce a single GUI exe."
+}
+
+if ($env:LIBRAW_DIR) {
+    $includeDir = Join-Path $env:LIBRAW_DIR "include"
+    $libDir = Join-Path $env:LIBRAW_DIR "lib"
+    if (-not (Test-Path $includeDir)) {
+        throw "LibRaw include directory not found: $includeDir"
+    }
+    if (-not (Test-Path $libDir)) {
+        throw "LibRaw library directory not found: $libDir"
+    }
+    $env:CGO_CFLAGS = "$($env:CGO_CFLAGS) -I`"$includeDir`" -DLIBRAW_NODLL".Trim()
+    $env:CGO_LDFLAGS = "$($env:CGO_LDFLAGS) -L`"$libDir`" -Wl,-Bstatic -lraw -lstdc++ -static-libgcc -static-libstdc++ -Wl,-Bdynamic -lws2_32 -lole32 -luuid".Trim()
+}
 
 Remove-Item -Recurse -Force $packageRoot -ErrorAction SilentlyContinue
 Remove-Item -Force $zipPath -ErrorAction SilentlyContinue
@@ -24,7 +42,7 @@ New-Item -ItemType Directory -Force -Path $packageRoot, $releaseDir | Out-Null
 
 Push-Location $root
 try {
-    & go build -trimpath -ldflags="-s -w -H=windowsgui" -o $output ./cmd/photochoser
+    & go build -tags=libraw -trimpath -ldflags="-s -w -H=windowsgui" -o $output ./cmd/photochoser
     if ($LASTEXITCODE -ne 0) {
         throw "go build failed with exit code $LASTEXITCODE"
     }
@@ -33,7 +51,6 @@ finally {
     Pop-Location
 }
 
-Copy-Item -Path (Join-Path $root "README.md") -Destination (Join-Path $packageRoot "README.md")
 Compress-Archive -Path $packageRoot -DestinationPath $zipPath -Force
 
 Write-Host "Created:"

@@ -22,7 +22,7 @@ PhotoChoser 是一个面向活动摄影快速返图的跨平台选片工具，�
 - 移动或复制 RAW 文件时会同时处理同名 `.xmp` 边车文件。
 - 使用 Go 协程并发生成缩略图，并使用会话级临时缓存加快重复显示；软件退出时会清除预览缓存。
 - 支持 JPEG、PNG、TIFF，以及主流微单/相机 RAW 文件扩展名。
-- RAW 预览优先读取文件内嵌 JPEG 预览，适合快速选片场景，也兼容索尼压缩 RAW 等常见格式的快速查看。
+- RAW 预览优先读取文件内嵌 JPEG 预览；发布用 Windows GUI exe 会静态内嵌 LibRaw，缺少内嵌预览时不需要用户安装系统 RAW 编解码支持。
 - 自动忽略 macOS 在存储卡上生成的 `._*` AppleDouble 元数据文件，避免把它们误当作 RAW。
 
 ## 快速开始
@@ -78,10 +78,7 @@ JPEG、PNG、TIFF 会直接解码显示。JPEG 和 RAW 内嵌 JPEG 预览会根�
 
 切换当前照片时，PhotoChoser 会优先显示已有缩略图或已缓存的大图，随后在后台生成更清晰的大图预览。它还会提前预取当前照片后面的几张和前一张大图预览，让连续按方向键选片更顺滑。
 
-RAW 文件会优先读取相机写入文件里的内嵌 JPEG 预览，这比完整 RAW 解码更快，适合选片。如果没有找到内嵌 JPEG，PhotoChoser 会尝试系统原生 RAW 预览能力：
-
-- macOS：调用 `sips` 转换临时 JPEG 进行预览。
-- Windows：使用 PowerShell / WIC，在系统安装了对应 RAW 编解码支持时预览。
+RAW 文件会优先读取相机写入文件里的内嵌 JPEG 预览，这比完整 RAW 解码更快，适合选片。发布用 Windows GUI exe 使用静态内嵌的 LibRaw 作为兜底解码后端；如果没有找到内嵌 JPEG，PhotoChoser 会直接在应用内部解码 RAW，不要求用户安装 Windows RAW Image Extension 或相机厂商 codec。
 
 ## RAW 格式支持
 
@@ -123,6 +120,7 @@ make build
 在 Windows 上构建不会显示黑框的 GUI 程序：
 
 ```powershell
+$env:LIBRAW_DIR="C:\path\to\libraw-static"
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
 ```
 
@@ -132,13 +130,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
 make build-windows
 ```
 
-Windows 构建产物会输出到 `bin/PhotoChoser.exe`。该构建会使用 `-ldflags="-H=windowsgui"`，从资源管理器双击启动时不会显示控制台黑框。
+Windows 构建产物会输出到 `bin/PhotoChoser.exe`。该构建会启用 `-tags=libraw` 和 `-ldflags="-H=windowsgui"`，从资源管理器双击启动时不会显示控制台黑框。脚本要求 `LIBRAW_DIR` 指向静态 LibRaw 安装根目录，或者手动提供 `CGO_CFLAGS` 和 `CGO_LDFLAGS`；这样最终产物仍是单个 GUI `.exe`，不随包分发 DLL 或 helper。
 
 ## 打包
 
 Windows 上可以生成用于发布的 zip 包：
 
 ```powershell
+$env:LIBRAW_DIR="C:\path\to\libraw-static"
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\package_windows.ps1
 ```
 
@@ -148,7 +147,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\package_windows.ps
 make package-windows
 ```
 
-构建产物会输出到 `dist/release/PhotoChoser-<version>-windows-amd64.zip`。
+构建产物会输出到 `dist/release/PhotoChoser-<version>-windows-amd64.zip`，压缩包内只包含单个 `PhotoChoser.exe` GUI 应用。
 
 macOS 上可以直接生成可运行的 `.app` 和可分发的 `.dmg`：
 
