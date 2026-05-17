@@ -7,6 +7,32 @@ function Set-LibRawBuildEnv {
 
     $env:CGO_ENABLED = "1"
 
+    $msysRoots = @()
+    if ($env:MSYS2_LOCATION) {
+        $msysRoots += $env:MSYS2_LOCATION
+    }
+    $msysRoots += "C:\msys64"
+    if ($env:RUNNER_TEMP) {
+        $msysRoots += (Join-Path $env:RUNNER_TEMP "msys64")
+    }
+    foreach ($root in $msysRoots) {
+        if (-not $root) {
+            continue
+        }
+        $ucrtBin = Join-Path $root "ucrt64\bin"
+        $usrBin = Join-Path $root "usr\bin"
+        if ((Test-Path $ucrtBin) -and ($env:PATH -notlike "*$ucrtBin*")) {
+            $env:PATH = "$ucrtBin;$env:PATH"
+        }
+        if ((Test-Path $usrBin) -and ($env:PATH -notlike "*$usrBin*")) {
+            $env:PATH = "$usrBin;$env:PATH"
+        }
+        $pkgConfigDir = Join-Path $root "ucrt64\lib\pkgconfig"
+        if ((Test-Path $pkgConfigDir) -and ($env:PKG_CONFIG_PATH -notlike "*$pkgConfigDir*")) {
+            $env:PKG_CONFIG_PATH = "$pkgConfigDir;$env:PKG_CONFIG_PATH".TrimEnd(";")
+        }
+    }
+
     if ($env:LIBRAW_DIR) {
         $includeDir = Join-Path $env:LIBRAW_DIR "include"
         $libDir = Join-Path $env:LIBRAW_DIR "lib"
@@ -27,16 +53,23 @@ function Set-LibRawBuildEnv {
     }
 
     $pkgConfig = Get-Command pkg-config -ErrorAction SilentlyContinue
+    if (-not $pkgConfig) {
+        $pkgConfig = Get-Command pkgconf -ErrorAction SilentlyContinue
+    }
     if ($pkgConfig) {
-        & $pkgConfig.Source --exists libraw
-        if ($LASTEXITCODE -eq 0) {
-            $cflags = (& $pkgConfig.Source --cflags libraw) -join " "
+        $packageNames = @("libraw", "libraw_r", "LibRaw")
+        foreach ($packageName in $packageNames) {
+            & $pkgConfig.Source --exists $packageName
             if ($LASTEXITCODE -ne 0) {
-                throw "pkg-config --cflags libraw failed with exit code $LASTEXITCODE"
+                continue
             }
-            $libs = (& $pkgConfig.Source --libs --static libraw) -join " "
+            $cflags = (& $pkgConfig.Source --cflags $packageName) -join " "
             if ($LASTEXITCODE -ne 0) {
-                throw "pkg-config --libs --static libraw failed with exit code $LASTEXITCODE"
+                throw "$($pkgConfig.Name) --cflags $packageName failed with exit code $LASTEXITCODE"
+            }
+            $libs = (& $pkgConfig.Source --libs --static $packageName) -join " "
+            if ($LASTEXITCODE -ne 0) {
+                throw "$($pkgConfig.Name) --libs --static $packageName failed with exit code $LASTEXITCODE"
             }
             $env:CGO_CFLAGS = "$($env:CGO_CFLAGS) $cflags -DLIBRAW_NODLL".Trim()
             $env:CGO_LDFLAGS = "$($env:CGO_LDFLAGS) $libs".Trim()

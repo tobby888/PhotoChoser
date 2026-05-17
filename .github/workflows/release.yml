@@ -66,6 +66,7 @@ jobs:
           cache: true
 
       - name: Setup LibRaw toolchain
+        id: msys2
         uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
@@ -78,10 +79,12 @@ jobs:
       - name: Configure cgo
         shell: pwsh
         run: |
-          "C:\msys64\ucrt64\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          "${{ steps.msys2.outputs.msys2-location }}\usr\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          "MSYS2_LOCATION=${{ steps.msys2.outputs.msys2-location }}" | Out-File -FilePath $env:GITHUB_ENV -Append
           "CC=gcc" | Out-File -FilePath $env:GITHUB_ENV -Append
           "CXX=g++" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "PKG_CONFIG_PATH=C:/msys64/ucrt64/lib/pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "PKG_CONFIG_PATH=${{ steps.msys2.outputs.msys2-location }}/ucrt64/lib/pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Resolve version
         shell: pwsh
