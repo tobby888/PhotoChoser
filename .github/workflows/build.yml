@@ -42,7 +42,11 @@ jobs:
         run: go test ./...
       - name: Test LibRaw integration
         if: runner.os == 'Windows'
-        run: go test -tags=libraw ./internal/preview
+        shell: pwsh
+        run: |
+          . ./scripts/libraw-env.ps1
+          Set-LibRawBuildEnv "Windows CI tests use embedded LibRaw."
+          go test -tags=libraw ./internal/preview
       - name: Build
         if: runner.os != 'Windows'
         run: |
