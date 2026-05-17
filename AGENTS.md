@@ -46,6 +46,7 @@ PhotoChoser is a Go desktop app for event photographers who need fast same-day p
 - Project quick commands: `Makefile`
 - Windows GUI build helper: `scripts/build-windows.ps1`
 - Windows release package helper: `scripts/package_windows.ps1`
+- Shared Windows LibRaw CGO setup helper: `scripts/libraw-env.ps1`
 
 ## Quick Run
 

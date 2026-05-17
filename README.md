@@ -132,6 +132,8 @@ make build-windows
 
 Windows 构建产物会输出到 `bin/PhotoChoser.exe`。该构建会启用 `-tags=libraw` 和 `-ldflags="-H=windowsgui"`，从资源管理器双击启动时不会显示控制台黑框。脚本要求 `LIBRAW_DIR` 指向静态 LibRaw 安装根目录，或者手动提供 `CGO_CFLAGS` 和 `CGO_LDFLAGS`；这样最终产物仍是单个 GUI `.exe`，不随包分发 DLL 或 helper。
 
+GitHub Actions 会在 Windows runner 上自动安装 MSYS2 UCRT64、gcc、pkg-config 和 LibRaw，并通过 `pkg-config --static libraw` 配置 CGO。普通 Build workflow 会上传 `photochoser-windows-ci` 和 `photochoser-macos-ci` 构建产物；Release workflow 会生成正式的 Windows 单 exe zip 和 macOS DMG，并上传到 GitHub Release。
+
 ## 打包
 
 Windows 上可以生成用于发布的 zip 包：
