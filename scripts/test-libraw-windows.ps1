@@ -33,7 +33,8 @@ $buildPath = $env:PATH
 $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
 Push-Location $testDir
 try {
-    & $testExe -test.v
+    # Quote the flag: Windows PowerShell 5.1 splits bare "-test.v" at the dot.
+    & $testExe "-test.v"
     if ($LASTEXITCODE -ne 0) {
         throw "LibRaw tests failed with exit code $LASTEXITCODE without MinGW/LibRaw on PATH"
     }

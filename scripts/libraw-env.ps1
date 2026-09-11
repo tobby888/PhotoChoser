@@ -76,7 +76,9 @@ function Set-LibRawBuildEnv {
                 throw "$($pkgConfig.Name) --libs --static $packageName failed with exit code $LASTEXITCODE"
             }
             $env:CGO_CFLAGS = "$($env:CGO_CFLAGS) $cflags -DLIBRAW_NODLL".Trim()
-            $env:CGO_LDFLAGS = "$($env:CGO_LDFLAGS) $libs -lws2_32".Trim()
+            # MSYS2's libraw.pc omits the C++ runtime and zlib, which a static
+            # libraw.a still needs.
+            $env:CGO_LDFLAGS = "$($env:CGO_LDFLAGS) $libs -lstdc++ -lz -lws2_32".Trim()
             return
         }
     }
