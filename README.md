@@ -134,7 +134,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
 make build-windows
 ```
 
-Windows 构建产物会输出到 `bin/PhotoChoser.exe`。该构建会启用 `-tags=libraw` 和 `-ldflags="-H=windowsgui -extldflags=-static"`，从资源管理器双击启动时不会显示控制台黑框。LibRaw 及其依赖（lcms2、libjpeg、jasper、zlib）和 MinGW 的 C/C++/OpenMP 运行库都会静态链接进 exe，最终产物是单个 GUI `.exe`，不随包分发 DLL 或 helper，在没有安装 MSYS2 或 LibRaw 的电脑上也能直接运行。构建和打包脚本结束时会用 `objdump` 检查 exe 的导入表，只要依赖了 Windows 系统以外的 DLL（例如 `libraw-*.dll`、`libstdc++-6.dll`）就会直接报错。
+Windows 构建产物会输出到 `bin/PhotoChoser.exe`。该构建会启用 `-tags=libraw` 和 `-ldflags="-H=windowsgui -extldflags=-static"`，从资源管理器双击启动时不会显示控制台黑框。LibRaw 及其依赖（lcms2、libjpeg、zlib）和 MinGW 的 C/C++/OpenMP 运行库都会静态链接进 exe，最终产物是单个 GUI `.exe`，不随包分发 DLL 或 helper，在没有安装 MSYS2 或 LibRaw 的电脑上也能直接运行。构建和打包脚本结束时会用 `objdump` 检查 exe 的导入表，只要依赖了 Windows 系统以外的 DLL（例如 `libraw-*.dll`、`libstdc++-6.dll`）就会直接报错。
 
 `make test-libraw-windows`（即 `scripts/test-libraw-windows.ps1`）会用同样的静态链接方式编译 `internal/preview` 的 LibRaw 测试，并在 PATH 只保留 Windows 系统目录的情况下运行，确认产物不依赖 MSYS2 或 LibRaw 的 DLL。
 
