@@ -16,7 +16,7 @@ New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 
 Push-Location $root
 try {
-    & go build -tags=libraw -ldflags="-H=windowsgui" -o $output ./cmd/photochoser
+    & go build -tags=libraw "-ldflags=-H=windowsgui $WindowsStaticExtLdFlags" -o $output ./cmd/photochoser
     if ($LASTEXITCODE -ne 0) {
         throw "go build failed with exit code $LASTEXITCODE"
     }
@@ -24,5 +24,7 @@ try {
 finally {
     Pop-Location
 }
+
+Assert-WindowsExeSelfContained $output
 
 Write-Host "Built $output"

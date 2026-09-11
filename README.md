@@ -103,6 +103,7 @@ make test
 make build
 make build-windows
 make package-windows
+make test-libraw-windows
 make check-windows
 make package-macos
 ```
@@ -117,12 +118,15 @@ make build
 
 构建产物会输出到 `bin/photochoser`。
 
-在 Windows 上构建不会显示黑框的 GUI 程序：
+在 Windows 上构建不会显示黑框的 GUI 程序。推荐和 CI 一样使用 MSYS2 UCRT64 提供的 gcc、pkg-config 和 LibRaw（安装在 `C:\msys64` 时脚本会自动识别，其他位置可设置 `MSYS2_LOCATION`）：
 
 ```powershell
-$env:LIBRAW_DIR="C:\path\to\libraw-static"
+winget install MSYS2.MSYS2
+C:\msys64\usr\bin\bash.exe -lc "pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-pkgconf mingw-w64-ucrt-x86_64-libraw"
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
 ```
+
+也可以设置 `LIBRAW_DIR` 指向自己编译的静态 LibRaw 安装根目录（包含 `include/` 和 `lib/libraw.a`），或者手动提供 `CGO_CFLAGS` 和 `CGO_LDFLAGS`。
 
 也可以使用：
 
@@ -130,16 +134,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
 make build-windows
 ```
 
-Windows 构建产物会输出到 `bin/PhotoChoser.exe`。该构建会启用 `-tags=libraw` 和 `-ldflags="-H=windowsgui"`，从资源管理器双击启动时不会显示控制台黑框。脚本要求 `LIBRAW_DIR` 指向静态 LibRaw 安装根目录，或者手动提供 `CGO_CFLAGS` 和 `CGO_LDFLAGS`；这样最终产物仍是单个 GUI `.exe`，不随包分发 DLL 或 helper。
+Windows 构建产物会输出到 `bin/PhotoChoser.exe`。该构建会启用 `-tags=libraw` 和 `-ldflags="-H=windowsgui -extldflags=-static"`，从资源管理器双击启动时不会显示控制台黑框。LibRaw 及其依赖（lcms2、libjpeg、jasper、zlib）和 MinGW 的 C/C++/OpenMP 运行库都会静态链接进 exe，最终产物是单个 GUI `.exe`，不随包分发 DLL 或 helper，在没有安装 MSYS2 或 LibRaw 的电脑上也能直接运行。构建和打包脚本结束时会用 `objdump` 检查 exe 的导入表，只要依赖了 Windows 系统以外的 DLL（例如 `libraw-*.dll`、`libstdc++-6.dll`）就会直接报错。
 
-GitHub Actions 会在 Windows runner 上自动安装 MSYS2 UCRT64、gcc、pkg-config 和 LibRaw，并通过 `pkg-config --static libraw` 配置 CGO。普通 Build workflow 会上传 `photochoser-windows-ci` 和 `photochoser-macos-ci` 构建产物；Release workflow 会生成正式的 Windows 单 exe zip 和 macOS DMG，并上传到 GitHub Release。
+`make test-libraw-windows`（即 `scripts/test-libraw-windows.ps1`）会用同样的静态链接方式编译 `internal/preview` 的 LibRaw 测试，并在 PATH 只保留 Windows 系统目录的情况下运行，确认产物不依赖 MSYS2 或 LibRaw 的 DLL。
+
+GitHub Actions 会在 Windows runner 上自动安装 MSYS2 UCRT64、gcc、pkg-config 和 LibRaw，并通过 `pkg-config --static libraw` 配置 CGO、静态链接 LibRaw，同时运行上面的 DLL 依赖检查和无 LibRaw PATH 的测试。普通 Build workflow 会上传 `photochoser-windows-ci` 和 `photochoser-macos-ci` 构建产物；Release workflow 会生成正式的 Windows 单 exe zip 和 macOS DMG，并上传到 GitHub Release。
 
 ## 打包
 
-Windows 上可以生成用于发布的 zip 包：
+Windows 上可以生成用于发布的 zip 包（LibRaw 的准备方式同上）：
 
 ```powershell
-$env:LIBRAW_DIR="C:\path\to\libraw-static"
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\package_windows.ps1
 ```
 
