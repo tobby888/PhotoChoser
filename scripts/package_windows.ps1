@@ -26,7 +26,7 @@ New-Item -ItemType Directory -Force -Path $packageRoot, $releaseDir | Out-Null
 
 Push-Location $root
 try {
-    & go build -tags=libraw -trimpath -ldflags="-s -w -H=windowsgui" -o $output ./cmd/photochoser
+    & go build -tags=libraw -trimpath "-ldflags=-s -w -H=windowsgui $WindowsStaticExtLdFlags" -o $output ./cmd/photochoser
     if ($LASTEXITCODE -ne 0) {
         throw "go build failed with exit code $LASTEXITCODE"
     }
@@ -34,6 +34,8 @@ try {
 finally {
     Pop-Location
 }
+
+Assert-WindowsExeSelfContained $output
 
 Compress-Archive -Path $output -DestinationPath $zipPath -Force
 

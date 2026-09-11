@@ -1,5 +1,9 @@
 $ErrorActionPreference = "Stop"
 
+# Link LibRaw, its codec dependencies, and the MinGW C/C++/OpenMP runtimes
+# statically so Windows builds only import DLLs that ship with Windows.
+$WindowsStaticExtLdFlags = "-extldflags=-static"
+
 function Set-LibRawBuildEnv {
     param(
         [string]$Purpose = "Windows builds use embedded LibRaw and produce a single GUI exe."
@@ -43,7 +47,7 @@ function Set-LibRawBuildEnv {
             throw "LibRaw library directory not found: $libDir"
         }
         $env:CGO_CFLAGS = "$($env:CGO_CFLAGS) -I`"$includeDir`" -DLIBRAW_NODLL".Trim()
-        $env:CGO_LDFLAGS = "$($env:CGO_LDFLAGS) -L`"$libDir`" -Wl,-Bstatic -lraw -lstdc++ -static-libgcc -static-libstdc++ -Wl,-Bdynamic -lws2_32 -lole32 -luuid".Trim()
+        $env:CGO_LDFLAGS = "$($env:CGO_LDFLAGS) -L`"$libDir`" -lraw -lstdc++ -lws2_32 -lole32 -luuid".Trim()
         return
     }
 
@@ -72,10 +76,45 @@ function Set-LibRawBuildEnv {
                 throw "$($pkgConfig.Name) --libs --static $packageName failed with exit code $LASTEXITCODE"
             }
             $env:CGO_CFLAGS = "$($env:CGO_CFLAGS) $cflags -DLIBRAW_NODLL".Trim()
-            $env:CGO_LDFLAGS = "$($env:CGO_LDFLAGS) $libs".Trim()
+            # MSYS2's libraw.pc omits the C++ runtime and zlib, which a static
+            # libraw.a still needs.
+            $env:CGO_LDFLAGS = "$($env:CGO_LDFLAGS) $libs -lstdc++ -lz -lws2_32".Trim()
             return
         }
     }
 
     throw "Set LIBRAW_DIR to a static LibRaw install root, set CGO_CFLAGS and CGO_LDFLAGS, or install pkg-config with a libraw.pc file. $Purpose"
+}
+
+function Assert-WindowsExeSelfContained {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $objdump = Get-Command objdump -ErrorAction SilentlyContinue
+    if (-not $objdump) {
+        throw "objdump not found on PATH; install MinGW binutils to verify $Path"
+    }
+    $headers = & $objdump.Source -p $Path
+    if ($LASTEXITCODE -ne 0) {
+        throw "objdump -p $Path failed with exit code $LASTEXITCODE"
+    }
+
+    $system32 = Join-Path $env:SystemRoot "System32"
+    $dlls = @($headers | Select-String -Pattern "DLL Name:\s*(\S+)" | ForEach-Object { $_.Matches[0].Groups[1].Value } | Sort-Object -Unique)
+    if ($dlls.Count -eq 0) {
+        throw "objdump reported no DLL imports for $Path"
+    }
+    $external = @($dlls | Where-Object {
+        $name = $_
+        $isApiSet = $name -match "^(api|ext)-ms-win-"
+        $isSystemDll = ($name -notmatch "^lib") -and (Test-Path (Join-Path $system32 $name))
+        -not ($isApiSet -or $isSystemDll)
+    })
+    if ($external.Count -gt 0) {
+        throw "$Path depends on non-system DLLs: $($external -join ', '). Windows builds must link LibRaw and the MinGW runtime statically."
+    }
+
+    Write-Host "Verified $Path only imports Windows system DLLs: $($dlls -join ', ')"
 }

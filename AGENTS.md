@@ -32,6 +32,7 @@ PhotoChoser is a Go desktop app for event photographers who need fast same-day p
 - For speed, prefer reading embedded JPEG previews from RAW files.
 - If no embedded JPEG preview is found, Windows release builds must use the embedded LibRaw CGO fallback, statically linked into the single GUI `.exe`.
 - Windows release builds must package only one GUI `.exe` app and must not depend on PowerShell/WIC RAW codecs, external DLLs, helper executables, or user-installed RAW format support.
+- Windows builds link with `-extldflags=-static` so LibRaw, its codec dependencies, and the MinGW C/C++/OpenMP runtimes are embedded; `Assert-WindowsExeSelfContained` in `scripts/libraw-env.ps1` fails the build if the exe imports any non-system DLL.
 - Development builds without the `libraw` build tag may still use the OS-native fallback path for local convenience.
 - Do not replace fast embedded preview loading with full RAW demosaic processing unless the embedded preview path fails; culling speed matters more than final RAW development accuracy.
 
@@ -46,7 +47,8 @@ PhotoChoser is a Go desktop app for event photographers who need fast same-day p
 - Project quick commands: `Makefile`
 - Windows GUI build helper: `scripts/build-windows.ps1`
 - Windows release package helper: `scripts/package_windows.ps1`
-- Shared Windows LibRaw CGO setup helper: `scripts/libraw-env.ps1`
+- Shared Windows LibRaw CGO setup and DLL dependency check helper: `scripts/libraw-env.ps1`
+- Windows LibRaw test runner with only system directories on PATH: `scripts/test-libraw-windows.ps1`
 
 ## Quick Run
 
@@ -54,8 +56,10 @@ PhotoChoser is a Go desktop app for event photographers who need fast same-day p
 - Run tests: `make test`
 - Build local binary: `make build`
 - Build macOS app bundle and DMG: `make package-macos`
-- Build Windows GUI binary without a console window: set `LIBRAW_DIR` to a static LibRaw install root, then run `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1`
-- Build Windows release zip: set `LIBRAW_DIR` to a static LibRaw install root, then run `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\package_windows.ps1`
+- Windows LibRaw toolchain: install MSYS2 at `C:\msys64` (or set `MSYS2_LOCATION`) with `mingw-w64-ucrt-x86_64-gcc`, `mingw-w64-ucrt-x86_64-pkgconf`, and `mingw-w64-ucrt-x86_64-libraw`, or set `LIBRAW_DIR` to a static LibRaw install root.
+- Build Windows GUI binary without a console window: `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1`
+- Build Windows release zip: `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\package_windows.ps1`
+- Run LibRaw tests without MinGW/LibRaw DLLs on PATH: `make test-libraw-windows`
 - Check Windows-only packages from macOS: `make check-windows`
 
 The Makefile keeps Go caches inside `.cache/` so Codex sandboxed runs do not write to the user-level Go cache.
@@ -90,8 +94,9 @@ Run these before handing off meaningful code changes:
 ```bash
 make test
 make build
-LIBRAW_DIR=<static LibRaw install root> powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
-LIBRAW_DIR=<static LibRaw install root> powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\package_windows.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\package_windows.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-libraw-windows.ps1
 make check-windows
 ```
 
