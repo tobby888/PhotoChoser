@@ -44,12 +44,15 @@ func ApplyOrientation(src image.Image, orientation int) image.Image {
 		dstWidth = height
 		dstHeight = width
 	}
+	rgba := ToRGBA(src)
 	dst := image.NewRGBA(image.Rect(0, 0, dstWidth, dstHeight))
 
 	for y := 0; y < height; y++ {
+		row := rgba.Pix[y*rgba.Stride : y*rgba.Stride+width*4]
 		for x := 0; x < width; x++ {
 			dx, dy := orientedPoint(x, y, width, height, orientation)
-			dst.Set(dx, dy, src.At(bounds.Min.X+x, bounds.Min.Y+y))
+			offset := dy*dst.Stride + dx*4
+			copy(dst.Pix[offset:offset+4], row[x*4:x*4+4])
 		}
 	}
 	return dst

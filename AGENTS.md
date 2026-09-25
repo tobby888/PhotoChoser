@@ -30,6 +30,8 @@ PhotoChoser is a Go desktop app for event photographers who need fast same-day p
 ## RAW Preview Strategy
 
 - For speed, prefer reading embedded JPEG previews from RAW files.
+- Locate embedded previews through TIFF IFD pointers (and the RAF header) first so only the directories and the chosen preview are read; fall back to scanning the whole file for SOI/EOI markers only when that fails.
+- Keep image scaling, EXIF rotation, and RGBA conversion off the Fyne UI thread. Display images use `canvas.ImageScaleFastest` with pre-scaled `*image.RGBA` data; Fyne's default smooth mode re-samples with CatmullRom on the UI thread on every refresh.
 - If no embedded JPEG preview is found, Windows release builds must use the embedded LibRaw CGO fallback, statically linked into the single GUI `.exe`.
 - Windows release builds must package only one GUI `.exe` app and must not depend on PowerShell/WIC RAW codecs, external DLLs, helper executables, or user-installed RAW format support.
 - Windows builds link with `-extldflags=-static` so LibRaw, its codec dependencies, and the MinGW C/C++/OpenMP runtimes are embedded; `Assert-WindowsExeSelfContained` in `scripts/libraw-env.ps1` fails the build if the exe imports any non-system DLL.

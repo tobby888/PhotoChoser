@@ -78,7 +78,7 @@ JPEG、PNG、TIFF 会直接解码显示。JPEG 和 RAW 内嵌 JPEG 预览会根�
 
 切换当前照片时，PhotoChoser 会优先显示已有缩略图或已缓存的大图，随后在后台生成更清晰的大图预览。它还会提前预取当前照片后面的几张和前一张大图预览，让连续按方向键选片更顺滑。
 
-RAW 文件会优先读取相机写入文件里的内嵌 JPEG 预览，这比完整 RAW 解码更快，适合选片。发布用 Windows GUI exe 使用静态内嵌的 LibRaw 作为兜底解码后端；如果没有找到内嵌 JPEG，PhotoChoser 会直接在应用内部解码 RAW，不要求用户安装 Windows RAW Image Extension 或相机厂商 codec。
+RAW 文件会优先读取相机写入文件里的内嵌 JPEG 预览，这比完整 RAW 解码更快，适合选片。对 ARW、NEF、CR2、DNG、RW2 等 TIFF 结构的 RAW 以及 RAF，会先按文件目录（IFD / 文件头）直接定位内嵌预览，只读取目录和所需的那张预览，不必扫描整个 RAW 文件；定位不到时才回退为全文件扫描。缩略图和大图在后台线程缩放并转换成可直接上传 GPU 的格式，界面线程不再做图像缩放。发布用 Windows GUI exe 使用静态内嵌的 LibRaw 作为兜底解码后端；如果没有找到内嵌 JPEG，PhotoChoser 会直接在应用内部解码 RAW，不要求用户安装 Windows RAW Image Extension 或相机厂商 codec。
 
 ## RAW 格式支持
 

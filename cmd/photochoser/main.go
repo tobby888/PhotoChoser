@@ -7,7 +7,6 @@ import (
 	"image/color"
 	"os"
 	"path/filepath"
-	"runtime"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -30,8 +29,10 @@ import (
 var errStalePreview = errors.New("stale preview request")
 
 const (
-	thumbMaxSide        = 220
-	previewMaxSide      = 1280
+	thumbMaxSide = 220
+	// Matches the 1616px embedded preview of Sony ARW files, so the most common
+	// RAW previews are displayed without any resampling.
+	previewMaxSide      = 1616
 	previewPrefetchNext = 3
 	previewPrefetchWait = 140 * time.Millisecond
 	previewMemoryLimit  = previewPrefetchNext + 3
@@ -95,6 +96,7 @@ type photoApp struct {
 	currentPreviewToken atomic.Int64
 
 	memoryTrimPending    atomic.Bool
+	memoryTrimAt         atomic.Int64
 	scanInProgress       atomic.Bool
 	autoScanStop         chan struct{}
 	autoScanStopOnce     sync.Once
@@ -131,6 +133,7 @@ type selectionBadgeRenderer struct {
 func newThumbRow() *thumbRow {
 	img := canvas.NewImageFromImage(nil)
 	img.FillMode = canvas.ImageFillContain
+	img.ScaleMode = canvas.ImageScaleFastest
 	img.SetMinSize(fyne.NewSize(92, 70))
 
 	row := &thumbRow{
@@ -280,6 +283,10 @@ func (ui *photoApp) build() {
 
 	ui.mainImage = canvas.NewImageFromImage(nil)
 	ui.mainImage.FillMode = canvas.ImageFillContain
+	// Smooth scaling re-samples the whole image with CatmullRom on the UI
+	// thread on every refresh; images are already pre-scaled RGBA, so let the
+	// GPU do the final fit.
+	ui.mainImage.ScaleMode = canvas.ImageScaleFastest
 	ui.mainImage.SetMinSize(fyne.NewSize(760, 560))
 
 	recursiveCheck := widget.NewCheck("包含子目录", func(checked bool) {
@@ -332,19 +339,23 @@ func (ui *photoApp) build() {
 		func(id widget.ListItemID, object fyne.CanvasObject) {
 			row := object.(*thumbRow)
 			item := ui.items[id]
-			row.name.SetText(item.Name)
+			setLabelText(row.name, item.Name)
 			row.selected.SetSelected(item.Selected)
-			row.error.SetText("")
+			errText := ""
 			if errValue, ok := ui.errors.Load(item.Path); ok {
-				row.error.SetText(errValue.(string))
+				errText = errValue.(string)
 			}
-			if imgValue, ok := ui.thumbs.Load(item.Path); ok {
-				row.image.Image = imgValue.(image.Image)
-			} else {
-				row.image.Image = nil
+			setLabelText(row.error, errText)
+			img, ok := ui.thumbs.Load(item.Path)
+			if !ok {
 				ui.loadThumb(id, ui.scanToken.Load())
 			}
-			row.image.Refresh()
+			// List.Select rebinds every visible row; only re-upload textures
+			// whose image actually changed.
+			if row.image.Image != img {
+				row.image.Image = img
+				row.image.Refresh()
+			}
 		},
 	)
 	ui.list.OnSelected = func(id widget.ListItemID) {
@@ -571,6 +582,10 @@ func (ui *photoApp) setCurrent(id int) {
 		ui.releaseUnusedMemorySoon()
 	}
 
+	if ui.memoryTrimPending.Load() {
+		ui.memoryTrimAt.Store(time.Now().Add(memoryTrimDelay).UnixNano())
+	}
+
 	token := ui.previewToken.Add(1)
 	scanToken := ui.scanToken.Load()
 	ui.beginSelectedAssetLoad(id, token, scanToken)
@@ -592,8 +607,14 @@ func (ui *photoApp) setCurrent(id int) {
 	go ui.loadCurrentPreview(id, item.Path, item.Name, item.Selected, token, scanToken)
 }
 
+// loadThumb is called for each row the list binds, so it only queues that row;
+// background preloading is driven by the current photo.
 func (ui *photoApp) loadThumb(id int, token int64) {
-	ui.prioritizeVisibleThumbs(id, token)
+	if id < 0 {
+		return
+	}
+	ui.thumbFocusID.Store(int64(id))
+	ui.queueThumb(thumbJob{id: id, token: token}, true)
 }
 
 func (ui *photoApp) beginSelectedAssetLoad(id int, previewToken int64, scanToken int64) {
@@ -603,20 +624,6 @@ func (ui *photoApp) beginSelectedAssetLoad(id int, previewToken int64, scanToken
 	ui.thumbFocusID.Store(int64(id))
 	ui.thumbBackgroundToken.Add(1)
 	ui.currentPreviewToken.Store(previewToken)
-}
-
-func (ui *photoApp) prioritizeVisibleThumbs(id int, token int64) {
-	if id < 0 {
-		return
-	}
-	ui.thumbFocusID.Store(int64(id))
-	backgroundToken := ui.thumbBackgroundToken.Add(1)
-
-	total := len(ui.items)
-	for _, thumbID := range thumbPriorityOrder(total, id, thumbVisibleRadius) {
-		ui.queueThumb(thumbJob{id: thumbID, token: token}, true)
-	}
-	ui.queueBackgroundThumbs(total, id, token, backgroundToken)
 }
 
 func (ui *photoApp) prioritizeNearbyThumbs(id int, token int64) {
@@ -846,6 +853,8 @@ func (ui *photoApp) loadSelectedThumb(id int, path string, previewToken int64, s
 	})
 }
 
+// storeThumbFromPreview derives the list thumbnail from a loaded preview,
+// scaling off the UI thread.
 func (ui *photoApp) storeThumbFromPreview(id int, path string, img image.Image, scanToken int64) {
 	if ui.scanToken.Load() != scanToken {
 		return
@@ -853,13 +862,23 @@ func (ui *photoApp) storeThumbFromPreview(id int, path string, img image.Image, 
 	if _, ok := ui.thumbs.Load(path); ok {
 		return
 	}
-	thumb := preview.Scale(img, thumbMaxSide)
-	if ui.thumbs.Store(path, thumb) {
-		ui.releaseUnusedMemorySoon()
-	}
-	if id >= 0 && id < len(ui.items) && ui.items[id].Path == path {
-		ui.list.RefreshItem(id)
-	}
+	go func() {
+		thumb := preview.Scale(img, thumbMaxSide)
+		fyne.Do(func() {
+			if ui.scanToken.Load() != scanToken {
+				return
+			}
+			if _, ok := ui.thumbs.Load(path); ok {
+				return
+			}
+			if ui.thumbs.Store(path, thumb) {
+				ui.releaseUnusedMemorySoon()
+			}
+			if id >= 0 && id < len(ui.items) && ui.items[id].Path == path {
+				ui.list.RefreshItem(id)
+			}
+		})
+	}()
 }
 
 func (ui *photoApp) showFastPreviewPlaceholder(item photos.Photo) {
@@ -1005,13 +1024,22 @@ func (ui *photoApp) clearImageCaches() {
 	}
 }
 
+// releaseUnusedMemorySoon returns freed image memory to the OS once browsing
+// has been idle for memoryTrimDelay. FreeOSMemory forces a full GC, so running
+// it in the middle of fast culling causes visible stutter.
 func (ui *photoApp) releaseUnusedMemorySoon() {
+	ui.memoryTrimAt.Store(time.Now().Add(memoryTrimDelay).UnixNano())
 	if !ui.memoryTrimPending.CompareAndSwap(false, true) {
 		return
 	}
 	go func() {
-		time.Sleep(memoryTrimDelay)
-		runtime.GC()
+		for {
+			wait := time.Until(time.Unix(0, ui.memoryTrimAt.Load()))
+			if wait <= 0 {
+				break
+			}
+			time.Sleep(wait)
+		}
 		debug.FreeOSMemory()
 		ui.memoryTrimPending.Store(false)
 	}()
@@ -1122,6 +1150,12 @@ func (ui *photoApp) transferActionText() string {
 		return "复制"
 	}
 	return "移动"
+}
+
+func setLabelText(label *widget.Label, text string) {
+	if label.Text != text {
+		label.SetText(text)
+	}
 }
 
 func pathSet(paths []string) map[string]struct{} {
