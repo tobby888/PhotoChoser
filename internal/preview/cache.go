@@ -51,7 +51,11 @@ func loadCachedJPEG(path string) (image.Image, error) {
 		return nil, err
 	}
 	defer file.Close()
-	return jpeg.Decode(file)
+	img, err := jpeg.Decode(file)
+	if err != nil {
+		return nil, err
+	}
+	return ToRGBA(img), nil
 }
 
 func saveCachedJPEG(path string, img image.Image) error {

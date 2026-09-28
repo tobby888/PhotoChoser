@@ -46,7 +46,6 @@ import "C"
 import (
 	"fmt"
 	"image"
-	"image/color"
 	"unsafe"
 )
 
@@ -80,16 +79,11 @@ func loadRAWFallback(path string) (image.Image, error) {
 
 	src := unsafe.Slice((*byte)(unsafe.Pointer(&decoded.data[0])), dataSize)
 	dst := image.NewRGBA(image.Rect(0, 0, width, height))
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
-			i := (y*width + x) * colors
-			dst.SetRGBA(x, y, color.RGBA{
-				R: src[i],
-				G: src[i+1],
-				B: src[i+2],
-				A: 255,
-			})
-		}
+	for i, j := 0, 0; i < width*height*colors; i, j = i+colors, j+4 {
+		dst.Pix[j] = src[i]
+		dst.Pix[j+1] = src[i+1]
+		dst.Pix[j+2] = src[i+2]
+		dst.Pix[j+3] = 0xff
 	}
 	return dst, nil
 }

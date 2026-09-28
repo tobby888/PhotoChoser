@@ -1,7 +1,6 @@
 package preview
 
 import (
-	"bufio"
 	"bytes"
 	"errors"
 	"image"
@@ -13,7 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"golang.org/x/image/draw"
 	_ "golang.org/x/image/tiff"
 )
 
@@ -22,57 +20,95 @@ const (
 	embeddedJPEGMaxBytes       = 128 << 20
 )
 
+var jpegEOI = []byte{0xff, 0xd9}
+
 func init() {
 	image.RegisterFormat("jpeg", "\xff\xd8", jpeg.Decode, jpeg.DecodeConfig)
 	image.RegisterFormat("png", "\x89PNG\r\n\x1a\n", png.Decode, png.DecodeConfig)
 	image.RegisterFormat("gif", "GIF8?a", gif.Decode, gif.DecodeConfig)
 }
 
+// LoadScaled returns an oriented *image.RGBA whose longest side is at most
+// maxSide, ready for display without further conversion.
 func LoadScaled(path string, maxSide int) (image.Image, error) {
-	if maxSide > 0 && !isStandardImage(path) {
-		if img, err := loadEmbeddedJPEGScaled(path, maxSide); err == nil {
-			return Scale(img, maxSide), nil
+	if maxSide <= 0 {
+		return Load(path)
+	}
+	if !isStandardImage(path) {
+		if img, orientation, err := loadEmbeddedJPEGScaled(path, maxSide); err == nil {
+			return scaleOriented(img, orientation, maxSide), nil
 		}
 	}
 
-	img, err := Load(path)
+	img, orientation, err := loadSource(path)
 	if err != nil {
 		return nil, err
 	}
-	if maxSide <= 0 {
-		return img, nil
-	}
-	return Scale(img, maxSide), nil
+	return scaleOriented(img, orientation, maxSide), nil
 }
 
-func loadEmbeddedJPEGScaled(path string, maxSide int) (image.Image, error) {
-	orientation := ReadOrientation(path)
-	jpegBytes, err := extractEmbeddedJPEGForMaxSide(path, maxSide)
+// scaleOriented scales before rotating so orientation only touches the small
+// output image.
+func scaleOriented(img image.Image, orientation int, maxSide int) *image.RGBA {
+	return ToRGBA(ApplyOrientation(Scale(img, maxSide), orientation))
+}
+
+func loadEmbeddedJPEGScaled(path string, maxSide int) (image.Image, int, error) {
+	file, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
+	defer file.Close()
+
+	if jpegBytes, orientation, err := readTIFFPreview(file, maxSide); err == nil {
+		if img, orientation, err := decodeEmbeddedJPEG(jpegBytes, orientation); err == nil {
+			return img, orientation, nil
+		}
+	}
+
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return nil, 0, err
+	}
+	jpegBytes, err := extractEmbeddedJPEG(file, maxSide)
+	if err != nil {
+		return nil, 0, err
+	}
+	return decodeEmbeddedJPEG(jpegBytes, ReadOrientation(path))
+}
+
+func decodeEmbeddedJPEG(jpegBytes []byte, orientation int) (image.Image, int, error) {
 	if orientation == orientationNormal {
 		orientation = readOrientationFromBytes(jpegBytes)
 	}
 	img, err := jpeg.Decode(bytes.NewReader(jpegBytes))
+	if err != nil {
+		return nil, 0, err
+	}
+	return img, orientation, nil
+}
+
+func Load(path string) (image.Image, error) {
+	img, orientation, err := loadSource(path)
 	if err != nil {
 		return nil, err
 	}
 	return ApplyOrientation(img, orientation), nil
 }
 
-func Load(path string) (image.Image, error) {
+// loadSource decodes the full-size image and returns the orientation that
+// still has to be applied to it.
+func loadSource(path string) (image.Image, int, error) {
 	orientation := ReadOrientation(path)
 	if isStandardImage(path) {
 		file, err := os.Open(path)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		defer file.Close()
 
 		img, _, err := image.Decode(file)
 		if err == nil {
-			return ApplyOrientation(img, orientation), nil
+			return img, orientation, nil
 		}
 	}
 
@@ -83,37 +119,18 @@ func Load(path string) (image.Image, error) {
 		}
 		img, err := jpeg.Decode(bytes.NewReader(jpegBytes))
 		if err == nil {
-			return ApplyOrientation(img, orientation), nil
+			return img, orientation, nil
 		}
 	}
 
 	img, fallbackErr := loadRAWFallback(path)
 	if fallbackErr == nil {
-		return img, nil
+		return img, orientationNormal, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return nil, fallbackErr
-}
-
-func Scale(src image.Image, maxSide int) image.Image {
-	bounds := src.Bounds()
-	width := bounds.Dx()
-	height := bounds.Dy()
-	if width <= maxSide && height <= maxSide {
-		return src
-	}
-
-	scale := float64(maxSide) / float64(width)
-	if height > width {
-		scale = float64(maxSide) / float64(height)
-	}
-	dstWidth := max(1, int(float64(width)*scale))
-	dstHeight := max(1, int(float64(height)*scale))
-	dst := image.NewRGBA(image.Rect(0, 0, dstWidth, dstHeight))
-	draw.CatmullRom.Scale(dst, dst.Bounds(), src, bounds, draw.Over, nil)
-	return dst
+	return nil, 0, fallbackErr
 }
 
 func ExtractEmbeddedJPEG(path string) ([]byte, error) {
@@ -130,56 +147,78 @@ func extractEmbeddedJPEGForMaxSide(path string, maxSide int) ([]byte, error) {
 	return extractEmbeddedJPEG(file, maxSide)
 }
 
+// extractEmbeddedJPEG scans the whole stream for SOI...EOI byte runs. It is
+// the slow fallback for RAW layouts whose previews readTIFFPreview cannot find.
 func extractEmbeddedJPEG(reader io.Reader, maxSide int) ([]byte, error) {
 	var choice embeddedJPEGChoice
 
-	buffered := bufio.NewReaderSize(reader, embeddedJPEGScanBufferSize)
+	buf := make([]byte, embeddedJPEGScanBufferSize)
 	state := 0
 	var candidate []byte
 	for {
-		b, err := buffered.ReadByte()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-
-		if candidate != nil {
-			candidate = append(candidate, b)
-			if len(candidate) > embeddedJPEGMaxBytes {
-				candidate = nil
-				state = 0
+		n, readErr := reader.Read(buf)
+		chunk := buf[:n]
+		for len(chunk) > 0 {
+			if candidate != nil {
+				end := -1
+				if candidate[len(candidate)-1] == 0xff && chunk[0] == 0xd9 {
+					end = 1
+				} else if i := bytes.Index(chunk, jpegEOI); i >= 0 {
+					end = i + 2
+				}
+				if end < 0 {
+					candidate = append(candidate, chunk...)
+					chunk = nil
+				} else {
+					candidate = append(candidate, chunk[:end]...)
+					chunk = chunk[end:]
+				}
+				if len(candidate) > embeddedJPEGMaxBytes {
+					candidate = nil
+					state = 0
+					continue
+				}
+				if end >= 0 {
+					choice.keep(candidate, maxSide)
+					candidate = nil
+					state = 0
+				}
 				continue
 			}
-			if len(candidate) >= 2 && candidate[len(candidate)-2] == 0xff && candidate[len(candidate)-1] == 0xd9 {
-				choice.keep(candidate, maxSide)
-				candidate = nil
-				state = 0
-			}
-			continue
-		}
 
-		switch state {
-		case 0:
-			if b == 0xff {
+			switch state {
+			case 0:
+				i := bytes.IndexByte(chunk, 0xff)
+				if i < 0 {
+					chunk = nil
+					continue
+				}
+				chunk = chunk[i+1:]
 				state = 1
+			case 1:
+				switch chunk[0] {
+				case 0xd8:
+					state = 2
+				case 0xff:
+					state = 1
+				default:
+					state = 0
+				}
+				chunk = chunk[1:]
+			case 2:
+				if chunk[0] == 0xff {
+					candidate = []byte{0xff, 0xd8, 0xff}
+				} else {
+					state = 0
+				}
+				chunk = chunk[1:]
 			}
-		case 1:
-			switch b {
-			case 0xd8:
-				state = 2
-			case 0xff:
-				state = 1
-			default:
-				state = 0
-			}
-		case 2:
-			if b == 0xff {
-				candidate = []byte{0xff, 0xd8, 0xff}
-			} else {
-				state = 0
-			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return nil, readErr
 		}
 	}
 
